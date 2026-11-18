@@ -1,0 +1,70 @@
+{
+    "version": 1,
+    "name": "coffee-agent",
+    "places": [
+        { "id": "idle" },
+        { "id": "paid" },
+        { "id": "brewing_coffee" },
+        { "id": "brewing_tea" }
+    ],
+    "transitions": [
+        {
+            "id": "insert_coin",
+            "label": "coin",
+            "kind": "controllable"
+        },
+        {
+            "id": "brew_coffee",
+            "label": "brew_coffee",
+            "kind": "controllable"
+        },
+        {
+            "id": "brew_tea",
+            "label": "brew_tea",
+            "kind": "controllable"
+        },
+        {
+            "id": "refund",
+            "label": "refund",
+            "kind": "controllable"
+        },
+        {
+            "id": "serve_coffee",
+            "label": "coffee.served",
+            "kind": "observable"
+        },
+        {
+            "id": "serve_tea",
+            "label": "tea.served",
+            "kind": "observable"
+        }
+    ],
+    "arcs": [
+        { "from": "idle", "to": "insert_coin" },
+        { "from": "insert_coin", "to": "paid" },
+        { "from": "paid", "to": "brew_coffee" },
+        { "from": "brew_coffee", "to": "brewing_coffee" },
+        { "from": "paid", "to": "brew_tea" },
+        { "from": "brew_tea", "to": "brewing_tea" },
+        { "from": "paid", "to": "refund" },
+        { "from": "refund", "to": "idle" },
+        { "from": "brewing_coffee", "to": "serve_coffee" },
+        { "from": "serve_coffee", "to": "idle" },
+        { "from": "brewing_tea", "to": "serve_tea" },
+        { "from": "serve_tea", "to": "idle" }
+    ],
+    "markings": {
+        "initial": [
+            {
+                "name": "start",
+                "tokens": { "idle": 1 }
+            }
+        ],
+        "target": [
+            {
+                "name": "idle",
+                "tokens": { "idle": 1 }
+            }
+        ]
+    }
+}

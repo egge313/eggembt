@@ -1,0 +1,134 @@
+{
+  "version": 1,
+  "name": "atm",
+
+  "places": [
+    {"id": "idle"},
+    {"id": "inserting"},
+    {"id": "session_up"},
+    {"id": "db_up"},
+    {"id": "reading"},
+    {"id": "await_pin"},
+    {"id": "pin_answering"},
+    {"id": "authed"},
+    {"id": "funds_answering"},
+    {"id": "dispensed"},
+    {"id": "ejecting"},
+    {"id": "swallowing"},
+    {"id": "confiscating"},
+    {"id": "swallowed"},
+    {"id": "confiscated"},
+    {"id": "session_broken"},
+    {"id": "db_broken"},
+    {"id": "atm_broken"},
+    {"id": "visit_done"},
+    {"id": "cash_taken"},
+    {"id": "cassette"},
+    {"id": "tries", "bound": 2}
+  ],
+
+  "transitions": [
+    {"id": "insert_card",        "label": "card.insert",         "kind": "controllable"},
+    {"id": "open_session",       "kind": "internal"},
+    {"id": "connect_db",         "kind": "internal"},
+    {"id": "reader_check",       "kind": "internal"},
+    {"id": "pad_check",          "kind": "internal"},
+    {"id": "stolen_flag",        "label": "bank.stolen_report",  "kind": "internal"},
+    {"id": "card_read",          "label": "card.read",           "kind": "observable"},
+    {"id": "confiscate",         "label": "card.confiscated",    "kind": "observable",
+     "error": true, "crash_dump": "crash"},
+
+    {"id": "enter_pin",          "label": "pin.enter",           "kind": "controllable",
+     "unpredictable": true},
+    {"id": "pin_ok",             "label": "pin.accepted",        "kind": "observable"},
+    {"id": "reject_more",        "label": "pin.rejected",        "kind": "observable"},
+    {"id": "reject_last",        "label": "pin.rejected",        "kind": "observable"},
+    {"id": "session_fail",       "label": "session.down",        "kind": "internal",
+     "error": true, "crash_dump": "crash"},
+
+    {"id": "request_withdrawal", "label": "withdraw.request",    "kind": "controllable"},
+    {"id": "cash_out",           "label": "cash.dispensed",      "kind": "observable"},
+    {"id": "funds_reject",       "label": "withdraw.rejected",   "kind": "observable"},
+    {"id": "db_fail",            "label": "db.down",             "kind": "internal",
+     "error": true, "crash_dump": "crash"},
+
+    {"id": "return_card",        "label": "card.return",         "kind": "controllable"},
+    {"id": "eject_after_cash",   "label": "card.ejected",        "kind": "observable"},
+    {"id": "eject_on_return",    "label": "card.ejected",        "kind": "observable"},
+    {"id": "atm_fail",           "label": "atm.down",            "kind": "internal",
+     "error": true, "crash_dump": "crash"},
+
+    {"id": "swallow_card",       "label": "card.kept",           "kind": "observable"}
+  ],
+
+  "arcs": [
+    {"from": "idle",            "to": "insert_card"},
+    {"from": "insert_card",     "to": "inserting"},
+    {"from": "inserting",       "to": "open_session"},
+    {"from": "open_session",    "to": "session_up"},
+    {"from": "session_up",      "to": "connect_db"},
+    {"from": "connect_db",      "to": "db_up"},
+    {"from": "db_up",           "to": "reader_check"},
+    {"from": "db_up",           "to": "pad_check"},
+    {"from": "db_up",           "to": "stolen_flag"},
+    {"from": "stolen_flag",     "to": "confiscating"},
+    {"from": "reader_check",    "to": "reading"},
+    {"from": "pad_check",       "to": "reading"},
+    {"from": "reading",         "to": "card_read"},
+    {"from": "card_read",       "to": "await_pin"},
+    {"from": "confiscating",    "to": "confiscate"},
+    {"from": "confiscate",      "to": "confiscated"},
+
+    {"from": "await_pin",       "to": "enter_pin"},
+    {"from": "enter_pin",       "to": "pin_answering"},
+    {"from": "pin_answering",   "to": "pin_ok"},
+    {"from": "pin_ok",          "to": "authed"},
+    {"from": "pin_answering",   "to": "reject_more"},
+    {"from": "tries",           "to": "reject_more"},
+    {"from": "reject_more",     "to": "await_pin"},
+    {"from": "reject_last",     "to": "swallowing"},
+    {"from": "tries",           "to": "reject_last", "type": "inhibitor"},
+    {"from": "pin_answering",   "to": "reject_last"},
+    {"from": "session_fail",    "to": "session_broken"},
+    {"from": "swallowing",      "to": "swallow_card"},
+    {"from": "swallow_card",    "to": "swallowed"},
+
+    {"from": "authed",          "to": "request_withdrawal"},
+    {"from": "request_withdrawal", "to": "funds_answering"},
+    {"from": "funds_answering", "to": "cash_out"},
+    {"from": "cassette",        "to": "cash_out"},
+    {"from": "cash_out",        "to": "dispensed"},
+    {"from": "cash_out",        "to": "cash_taken"},
+    {"from": "funds_answering", "to": "funds_reject"},
+    {"from": "funds_reject",    "to": "authed"},
+    {"from": "funds_answering", "to": "session_fail"},
+    {"from": "funds_answering", "to": "db_fail"},
+    {"from": "db_fail",         "to": "db_broken"},
+
+    {"from": "authed",          "to": "return_card"},
+    {"from": "return_card",     "to": "ejecting"},
+    {"from": "dispensed",       "to": "eject_after_cash"},
+    {"from": "eject_after_cash","to": "visit_done"},
+    {"from": "ejecting",        "to": "eject_on_return"},
+    {"from": "eject_on_return", "to": "visit_done"},
+    {"from": "dispensed",       "to": "atm_fail"},
+    {"from": "atm_fail",        "to": "atm_broken"}
+  ],
+
+  "markings": {
+    "initial": [
+      {"name": "atm-lobby",   "tokens": {"idle": 1, "tries": 2, "cassette": 2}},
+      {"name": "atm-drivein", "tokens": {"idle": 1, "tries": 2, "cassette": 1}},
+      {"name": "atm-branch",  "tokens": {"idle": 1, "tries": 2, "cassette": 0}}
+    ],
+    "target": [
+      {"name": "visit-done", "match": "covers", "tokens": {"visit_done": 1, "cash_taken": 1},
+       "intentional": true},
+      {"name": "visit-aborted", "match": "covers", "tokens": {"visit_done": 1}}
+    ],
+    "error": [
+      {"name": "card-swallowed", "match": "covers", "tokens": {"swallowed": 1},
+       "policy": "until_covered", "target_hits": 1, "crash_dump": "crash", "max_dumps": 1}
+    ]
+  }
+}

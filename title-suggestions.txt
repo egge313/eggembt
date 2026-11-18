@@ -1,0 +1,24 @@
+How would you rephrase the title, "Ant Colonies Helping  to Reach Coverage in Model Based Testing"?
+
+Egge, here are a few ways to rephrase it, depending on the tone you want:
+
+More concise
+
+Ant Colony Optimization for Coverage in Model-Based Testing
+Ant-Inspired Coverage Generation in Model-Based Testing
+
+More formal/academic
+
+Applying Ant Colony Optimization to Achieve Test Coverage in Model-Based Testing
+An Ant Colony Optimization Approach to Coverage-Driven Test Generation from Models
+
+More descriptive
+
+Using Ant Colony Algorithms to Reach Full Coverage in Model-Based Testing
+Boosting Model-Based Testing Coverage with Ant Colony Optimization
+
+More catchy
+
+Following the Ants: Reaching Coverage in Model-Based Testing
+
+If it’s for a paper or thesis, I’d go with “An Ant Colony Optimization Approach to Coverage-Driven Test Generation from Models” or the more compact “Ant Colony Optimization for Coverage in Model-Based Testing.” Both use the standard term “Ant Colony Optimization” instead of “Ant Colonies,” which readers in the field will recognize immediately.

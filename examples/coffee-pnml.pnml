@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- GLM-5.3-Flash: the PNML import example (doku section 12, item 6).
+     Shows the mbt conventions: a toolspecific kind+label on every visible
+     transition, the '?'-prefix fallback on a controllable, a milestone tag
+     with rank 2, an inhibitor arc, and per-place initial markings that the
+     loader unions into one marking.
+     The machine can be switched off (switch_off consumes the brewing state
+     AND the lamp token) so the model is not one big terminal cycle: PNML
+     cannot declare target markings, and without an exit every move into the
+     serving cycle would be vetoed as a livelock of the specification.
+     Try: mbt check examples/coffee-pnml.pnml
+          mbt run examples/coffee-pnml.pnml --simulate -->
+<pnml xmlns="http://www.pnml.org/version-2009/grammar/pnml">
+  <net id="coffee-pnml" type="P/T net">
+    <name><text>coffee-pnml</text></name>
+    <page id="page1">
+      <place id="idle">
+        <initialMarking><text>1</text></initialMarking>
+      </place>
+      <place id="lamp">
+        <!-- a token that never moves on its own: shows the union of
+             per-place initial markings into one marking of the model -->
+        <initialMarking><text>1</text></initialMarking>
+      </place>
+      <place id="paid"/>
+      <place id="brewing"/>
+      <place id="off"/>
+      <transition id="coin">
+        <toolspecific tool="mbt" kind="controllable" label="coin.insert"/>
+      </transition>
+      <transition id="brew">
+        <toolspecific tool="mbt" kind="controllable" label="button.brew"/>
+      </transition>
+      <transition id="serve">
+        <toolspecific tool="mbt" kind="observable" label="drink.served"/>
+        <!-- a milestone of rank 2: a certainly stepped serve deposits
+             double milestone pheromones -->
+        <toolspecific tool="mbt" kind="milestone" rank="2"/>
+      </transition>
+      <!-- the '?' prefix is the fallback for a controllable without a
+           toolspecific: kind controllable, label "flush" -->
+      <transition id="?flush"/>
+      <transition id="switch_off">
+        <toolspecific tool="mbt" kind="controllable" label="power.off"/>
+      </transition>
+      <arc id="a1" source="idle" target="coin"/>
+      <arc id="a2" source="coin" target="paid"/>
+      <arc id="a3" source="paid" target="brew"/>
+      <arc id="a4" source="brew" target="brewing"/>
+      <arc id="a5" source="brewing" target="serve"/>
+      <arc id="a6" source="serve" target="idle"/>
+      <arc id="a7" source="paid" target="?flush"/>
+      <arc id="a8" source="?flush" target="paid"/>
+      <!-- flush is refused while the machine is idle -->
+      <arc id="a9" source="idle" target="?flush">
+        <type value="inhibitor"/>
+      </arc>
+      <!-- switching off ends the machine: brewing and the lamp are consumed -->
+      <arc id="a10" source="brewing" target="switch_off"/>
+      <arc id="a11" source="lamp" target="switch_off"/>
+      <arc id="a12" source="switch_off" target="off"/>
+    </page>
+  </net>
+</pnml>

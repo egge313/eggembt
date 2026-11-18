@@ -1,0 +1,486 @@
+#!/bin/sh
+# End-to-end tests of the mbt tool: real processes, pipes and sockets.
+#   MBT=/path/to/mbt EXAMPLES=/path/to/examples sh tests/cli_test.sh
+MBT=${MBT:?set MBT to the mbt binary}
+EXAMPLES=${EXAMPLES:?set EXAMPLES to the examples directory}
+ELEVATOR=$EXAMPLES/elevator-door.json
+DRINKS=$EXAMPLES/drink-machine.json
+HEARTBEAT=$EXAMPLES/heartbeat-livelock.json
+# GLM-5.3-Flash: the PNML import example and the reference agent shim
+# (doku section 12, items 6 and 7). REF_AGENT is set by the CMake test
+# invocation; manual runs without it skip the reference-agent scenario.
+PNML=$EXAMPLES/coffee-pnml.pnml
+AGENTMODEL=$EXAMPLES/agents/coffee.json
+
+TMP=$(mktemp -d "${TMPDIR:-/tmp}/mbt-cli-test.XXXXXX") || exit 99
+BG_PIDS=""
+cleanup() {
+    for p in $BG_PIDS; do kill "$p" 2>/dev/null; done
+    rm -rf "$TMP"
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM
+
+TESTS=0
+FAILS=0
+CURRENT=""
+
+begin() { CURRENT=$1; TESTS=$((TESTS + 1)); }
+fail() { FAILS=$((FAILS + 1)); echo "FAIL: $CURRENT: $*"; }
+
+# run <expected exit code> <command...>   (stdout+stderr in $TMP/out)
+run() {
+    expected=$1; shift
+    "$@" >"$TMP/out" 2>&1
+    code=$?
+    [ "$code" -eq "$expected" ] || { fail "expected exit $expected, got $code from: $*"; sed 's/^/    | /' "$TMP/out" | head -15; return 1; }
+}
+has() { grep -q -- "$1" "$TMP/out" || { fail "output lacks \"$1\""; sed 's/^/    | /' "$TMP/out" | head -15; return 1; }; }
+hasnt() { ! grep -q -- "$1" "$TMP/out" || fail "output unexpectedly has \"$1\""; }
+
+begin version
+run 0 "$MBT" version && has "^mbt [0-9]"
+
+# GLM-5.3-Flash: the credits, byte for byte as Egge asked for them.
+begin credits
+run 0 "$MBT" credits && has "^Egge Model Based Tester$" \
+    && has "^    Designer: Esa Kettunen$" \
+    && has "^    Copyright (c) Esa Kettunen 2026$" \
+    && has "^    Software written by artificial intelligence: Claude Sonnet 5.5 Medium$" \
+    && has "^    Software written by artificial intelligence: GLM-5.3-Flash$"
+run 0 "$MBT" --credits && has "Designer: Esa Kettunen"
+
+begin help
+run 0 "$MBT" help && has "Commands:" && has "agent-sim"
+run 0 "$MBT" help run && has "mbt run MODEL" && has "--simulate"
+run 0 "$MBT" run --help && has "--livelock-timeout"
+
+begin usage-errors
+run 2 "$MBT" && has "Usage:"
+run 2 "$MBT" frobnicate && has "unknown command"
+run 2 "$MBT" check && has "expected exactly one model file"
+run 2 "$MBT" check "$ELEVATOR" --no-such-option && has "unknown option"
+run 2 "$MBT" run "$DRINKS" && has "choose exactly one of"
+run 2 "$MBT" run "$DRINKS" --simulate --max-runs banana && has "whole number"
+run 2 "$MBT" run "$DRINKS" --simulate --dump-on-deviation sometimes && has "none, snapshot or crash"
+run 2 "$MBT" run "$DRINKS" --simulate --sim-weight nonsense=1 && has "no transition"
+
+begin check
+run 0 "$MBT" check "$ELEVATOR" && has "elevator-door" && has "7 transitions" && has "deadlocks: 0"
+run 0 "$MBT" check "$ELEVATOR" --no-explore && hasnt "Reachability graph"
+run 0 "$MBT" check "$HEARTBEAT" && has "livelocks): 1" && has "initial marking lies inside"
+run 2 "$MBT" check "$HEARTBEAT" --strict && has "--strict"
+run 2 "$MBT" check "$TMP/does-not-exist.json" && has "cannot open"
+
+# GLM-5.3-Flash: PNML import (doku section 12, item 6). The tool recognises
+# the file by its first byte, imports the mbt toolspecific conventions and
+# warns that PNML cannot declare target markings (so the switch-off deadlock
+# is the model's one target).
+begin pnml-model
+run 0 "$MBT" check "$PNML" && has "coffee-pnml" && has "5 transitions" && has "deadlocks: 1"
+run 0 "$MBT" check "$PNML" --strict && has "coffee-pnml"
+run 0 "$MBT" run "$PNML" --simulate --quiescence 40 --no-color \
+    && has "coverage complete" && has "transitions  5 of 5" && has "milestone transitions 1"
+
+begin check-reports-every-model-error
+cat >"$TMP/broken.json" <<'EOF'
+{"places":[{"id":"p"}],
+ "transitions":[{"id":"t","kind":"observable"}],
+ "arcs":[{"from":"p","to":"nowhere"},{"from":"t","to":"p","type":"inhibitor"}],
+ "markings":{"initial":[{"name":"s","tokens":{"zzz":1}}]}}
+EOF
+run 2 "$MBT" check "$TMP/broken.json"
+has '\$\.transitions\[0\]' && has '\$\.arcs\[0\]\.to' && has '\$\.arcs\[1\]\.type' && has 'unknown place'
+echo '{"places": [,]}' >"$TMP/syntax.json"
+run 2 "$MBT" check "$TMP/syntax.json" && has "line 1, column"
+
+# GLM-5.3-Flash: the "traced" key is checked: only labeled internal
+# transitions may carry it.
+cat >"$TMP/traced-bad.json" <<'EOF'
+{"places":[{"id":"p"}],
+ "transitions":[{"id":"u","kind":"internal","traced":true},
+                {"id":"v","kind":"internal","label":"work","traced":false},
+                {"id":"w","label":"go","kind":"observable","traced":false}],
+ "arcs":[{"from":"p","to":"u"},{"from":"u","to":"p"},
+         {"from":"p","to":"v"},{"from":"v","to":"p"},
+         {"from":"w","to":"p"}],
+ "markings":{"initial":[{"name":"s","tokens":{"p":1}}]}}
+EOF
+run 2 "$MBT" check "$TMP/traced-bad.json" \
+    && has 'transitions\[0\]\.traced' && has 'transitions\[2\]\.traced' \
+    && hasnt 'transitions\[1\]'
+# GLM-5.3-Flash: a named but silent internal step changes the kind counts.
+cat >"$TMP/traced-good.json" <<'EOF'
+{"version":1,"name":"traced-good",
+ "places":[{"id":"p"}],
+ "transitions":[{"id":"u","kind":"internal","label":"work","traced":false},
+                {"id":"v","kind":"internal","label":"busy"}],
+ "arcs":[{"from":"p","to":"u"},{"from":"u","to":"p"},{"from":"v","to":"p"}],
+ "markings":{"initial":[{"name":"s","tokens":{"p":1}}],"target":[{"name":"f","tokens":{"p":1}}]}}
+EOF
+run 0 "$MBT" check "$TMP/traced-good.json" && has "1 traced and 1 silent internal"
+
+begin explore
+run 0 "$MBT" explore "$ELEVATOR" --dot "$TMP/e.dot" && has "6 states, 7 edges" && has "Deadlocks  none"
+grep -q "^digraph" "$TMP/e.dot" && grep -q "open_cmd" "$TMP/e.dot" || fail "dot file is wrong"
+run 0 "$MBT" explore "$ELEVATOR" --internal-cycles && has "internal cycle"
+run 0 "$MBT" explore "$HEARTBEAT" && has "terminal cycle" && has "tick:1"
+run 2 "$MBT" explore "$ELEVATOR" --list x && has "whole number"
+
+begin simulated-campaign
+run 0 "$MBT" run "$DRINKS" --simulate --quiescence 40 --no-color && has "coverage complete" && has "transitions  6 of 6"
+run 0 "$MBT" run "$DRINKS" --simulate --quiescence 40 --quiet --json "$TMP/r.json" && hasnt "run 1"
+grep -q '"complete":true' "$TMP/r.json" && grep -q '"model":"drink-machine"' "$TMP/r.json" || fail "json report is wrong"
+
+begin no-ants
+# GLM-5.3-Flash: the ant colony can be switched off, and the report says which guidance ran.
+run 0 "$MBT" run "$DRINKS" --simulate --quiescence 40 --no-ants --no-color && has "coverage complete" && has "the ant colony is switched off"
+run 0 "$MBT" run "$DRINKS" --simulate --quiescence 40 --no-color && has "ant colony:"
+run 0 "$MBT" run "$DRINKS" --simulate --quiescence 40 --no-ants --quiet --json "$TMP/noants.json" && has "Guidance"
+grep -q '"ants":false' "$TMP/noants.json" && grep -q '"ant_iterations":0' "$TMP/noants.json" || fail "json does not report the switched-off colony"
+grep -q '"ants":true' "$TMP/r.json" && grep -q '"ant_iterations":[1-9]' "$TMP/r.json" || fail "the default campaign json does not report the ant colony"
+
+begin guidance-in-report
+# GLM-5.3-Flash: the remaining guidance switches are reported on the console
+# and in the --json file, both when set and when left at their defaults.
+run 0 "$MBT" run "$DRINKS" --simulate --quiescence 40 --no-color --deadlock-policy until_covered \
+    --livelock-policy until_covered --dump-on-livelock snapshot --threshold 2 --json "$TMP/guid.json" \
+    && has "targets: deadlock until_covered" && has "on livelock snapshot" && has "coverage threshold 2"
+grep -q '"deadlock_policy":"until_covered"' "$TMP/guid.json" \
+    && grep -q '"livelock_policy":"until_covered"' "$TMP/guid.json" \
+    && grep -q '"dump_on_livelock":"snapshot"' "$TMP/guid.json" \
+    && grep -q '"coverage_threshold":2' "$TMP/guid.json" \
+    || fail "json does not report the non-default guidance switches"
+grep -q '"deadlock_policy":"once"' "$TMP/r.json" && grep -q '"dump_on_deviation":"none"' "$TMP/r.json" \
+    && grep -q '"coverage_threshold":1' "$TMP/r.json" \
+    || fail "json does not report the default guidance switches"
+
+begin tlist-and-carryover
+# GLM-5.3-Flash: the T-list layer (doku section 16) and the carry-over factor
+# of the inherited pheromones are guidance switches too, reported the same
+# way. --tlist N turns the (marking, T-list) pairs on, --restored-pheromones
+# N sets how much of the earlier rounds' pheromone teaching a continued
+# campaign starts with (default 50).
+grep -q '"tlist":0' "$TMP/r.json" && grep -q '"restored_pheromones":50' "$TMP/r.json" \
+    || fail "json does not report the default tlist and carry-over switches"
+run 0 "$MBT" run "$DRINKS" --simulate --quiescence 40 --tlist 4 --restored-pheromones 25 --no-color \
+    && has "coverage complete" && has "transitions  6 of 6"
+run 0 "$MBT" run "$DRINKS" --simulate --quiescence 40 --tlist 4 --restored-pheromones 25 --quiet \
+    --json "$TMP/tl.json" && has "Guidance"
+grep -q '"tlist":4' "$TMP/tl.json" && grep -q '"restored_pheromones":25' "$TMP/tl.json" \
+    || fail "json does not report the tlist and carry-over switches"
+run 2 "$MBT" run "$DRINKS" --simulate --tlist 9 && has "whole number"
+run 2 "$MBT" run "$DRINKS" --simulate --tlist && has "needs a value"
+run 2 "$MBT" run "$DRINKS" --simulate --restored-pheromones 101 && has "whole number"
+
+# GLM-5.3-Flash: the catastrophe-pheromone pricing is a guidance switch too,
+# reported the same way; --flat-catastrophe turns it off.
+run 0 "$MBT" run "$DRINKS" --simulate --quiescence 40 --flat-catastrophe --no-color \
+    && has "catastrophes: flat (--flat-catastrophe)" && has "unpredictable transitions 0"
+run 0 "$MBT" run "$DRINKS" --simulate --quiescence 40 --flat-catastrophe --quiet --json "$TMP/flat.json"
+grep -q '"catastrophe_time_pricing":false' "$TMP/flat.json" \
+    || fail "json does not report the switched-off catastrophe pricing"
+grep -q '"catastrophe_time_pricing":true' "$TMP/r.json" \
+    || fail "json does not report the default catastrophe pricing"
+
+begin good-target
+# GLM-5.3-Flash: an intentional target marking is a good target state: a normal
+# target whose certain reach ends the campaign. The report names it per run.
+cat >"$TMP/goodtarget.json" <<'EOF'
+{"version":1,"name":"good-target",
+ "places":[{"id":"s0"},{"id":"s1"}],
+ "transitions":[{"id":"go","kind":"controllable","label":"go"},
+                {"id":"back","kind":"controllable","label":"back"}],
+ "arcs":[{"from":"s0","to":"go"},{"from":"go","to":"s1"},
+         {"from":"s1","to":"back"},{"from":"back","to":"s0"}],
+ "markings":{"initial":[{"name":"start","tokens":{"s0":1}}],
+             "target":[{"name":"reached","tokens":{"s1":1},"intentional":true}]}}
+EOF
+run 0 "$MBT" run "$TMP/goodtarget.json" --simulate --quiescence 40 --no-color --json "$TMP/gf.json" \
+    && has "the good target marking 'reached' was reached"
+grep -q '"good_target":"reached"' "$TMP/gf.json" \
+    && grep -q "the good target marking 'reached' was reached" "$TMP/gf.json" \
+    || fail "json does not report the good target state"
+
+begin crash-predictions
+# GLM-5.3-Flash: the crash predictions (doku section 17). The model predicts a
+# nondeterministic crash at a stimulus; the simulated SUT is seeded to die
+# there with the prediction's prior mean (--sim-seed reproduces it). The
+# experiment seeks the crash until it is certainly deterministic, then the way
+# in is marked as repellent and the campaign completes. In the --json file the
+# two knobs and every entry's experiment state are reported.
+cat >"$TMP/crashy.json" <<'EOF'
+{"version":1,"name":"crashy",
+ "places":[{"id":"ready"},{"id":"over"}],
+ "transitions":[{"id":"strike","label":"strike","kind":"controllable",
+                 "crash":{"class":"always","crash_dump":"snapshot","max_dumps":1}},
+                {"id":"stop","label":"stop","kind":"controllable"}],
+ "arcs":[{"from":"ready","to":"strike"},{"from":"strike","to":"ready"},
+         {"from":"ready","to":"stop"},{"from":"stop","to":"over"}],
+ "markings":{"initial":[{"name":"start","tokens":{"ready":1}}],
+             "target":[{"name":"idle","tokens":{"ready":1}}]}}
+EOF
+run 0 "$MBT" run "$TMP/crashy.json" --simulate --seed 7 --sim-seed 3 --max-runs 12 --no-color \
+    && has "the crash was attributed to t:strike (deterministic: 1 attempt(s), 1 crash(es))" \
+    && has "Crash predictions" && has "t:strike    always      deterministic  1         1        0 / 1"
+run 0 "$MBT" run "$TMP/crashy.json" --simulate --seed 7 --sim-seed 3 --max-runs 12 --quiet --json "$TMP/cr.json"
+grep -q '"crash_level":0.94' "$TMP/cr.json" && grep -q '"crash_attempts":6' "$TMP/cr.json" \
+    && grep -q '"prediction":"always"' "$TMP/cr.json" && grep -q '"status":"deterministic"' "$TMP/cr.json" \
+    || fail "json does not report the crash experiment"
+
+# GLM-5.3-Flash: a death nobody predicted gets an implicit entry at the last
+# credited step. --sim-crash-after N kills the simulated SUT mid-run wherever
+# it is; the experiment counts one attempt per run and gives up at its budget.
+cat >"$TMP/plain.json" <<'EOF'
+{"version":1,"name":"plain",
+ "places":[{"id":"a"},{"id":"b"}],
+ "transitions":[{"id":"go","label":"go","kind":"controllable"},
+                {"id":"back","label":"back","kind":"controllable"}],
+ "arcs":[{"from":"a","to":"go"},{"from":"go","to":"b"},
+         {"from":"b","to":"back"},{"from":"back","to":"a"}],
+ "markings":{"initial":[{"name":"start","tokens":{"a":1}}],
+             "target":[{"name":"visited","tokens":{"b":1}}]}}
+EOF
+run 0 "$MBT" run "$TMP/plain.json" --simulate --sim-seed 5 --sim-crash-after 2 --max-runs 8 --no-color \
+    && has "the crash was attributed to t:back (exhausted: 6 attempt(s), 5 crash(es))" \
+    && has "the ant colony marked the crash site as repellent" \
+    && has "t:back      implicit    exhausted  6         5        -"
+
+begin command-hooks
+# GLM-5.3-Flash: the command hooks (doku section 18). A synchronous hook's
+# output is captured into the run record, an asynchronous one is launched and
+# left alone, the guidance line names the model's hooks and their bound, and
+# the executions travel in the run log (the report shows them after a restore;
+# the commands are not run again).
+cat >"$TMP/hooky.json" <<'EOF'
+{"version":1,"name":"hooky",
+ "places":[{"id":"a"},{"id":"b"}],
+ "transitions":[{"id":"go","label":"go","kind":"controllable",
+                 "command":"printf 'hooked %s\\n' \"$MBT_TRANSITION\""},
+                {"id":"back","label":"back","kind":"controllable",
+                 "command":{"run":"true","mode":"async"}}],
+ "arcs":[{"from":"a","to":"go"},{"from":"go","to":"b"},
+         {"from":"b","to":"back"},{"from":"back","to":"a"}],
+ "markings":{"initial":[{"name":"start","tokens":{"a":1}}],
+             "target":[{"name":"visited","tokens":{"b":1}}]}}
+EOF
+run 0 "$MBT" run "$TMP/hooky.json" --simulate --quiescence 40 --no-color \
+    && has "Command hooks" && has "hooked go" && has "launched" \
+    && has "commands: 2 transition(s), timeout 60 s"
+run 0 "$MBT" run "$TMP/hooky.json" --simulate --quiescence 40 --quiet --json "$TMP/hooks.json"
+grep -q '"hook_timeout":60' "$TMP/hooks.json" && grep -q '"hook_runs":\[' "$TMP/hooks.json" \
+    && grep -q '"status":"ok"' "$TMP/hooks.json" && grep -q '"status":"launched"' "$TMP/hooks.json" \
+    || fail "json does not report the hook runs"
+run 2 "$MBT" run "$TMP/hooky.json" --simulate --hook-timeout 0 && has "needs a whole number from 1 to 3600"
+run 0 "$MBT" run "$TMP/hooky.json" --simulate --quiescence 40 --hook-timeout 2 --no-color --log "$TMP/h.log" \
+    && has "commands: 2 transition(s), timeout 2 s"
+run 0 "$MBT" report "$TMP/hooky.json" --log "$TMP/h.log" --no-color \
+    && has "Command hooks" && has "hooked go" && has "launched"
+
+begin atm-visit
+# GLM-5.3-Flash: the worked ATM example exercises the whole feature set on one
+# model: three initial markings (several ATMs, differing cash cassettes, so
+# the round-robin rotation is visible in the run log), an error TRANSITION per
+# failing component (session, database, ATM -- each caught with a crash-dump
+# post-mortem), a stolen-card branch announced by a traced internal, a
+# swallowed card as an error MARKING target, an unpredictable human-typed PIN
+# step, and an intentional good target that needs a real withdrawal and ends
+# the campaign. With --sim-seed 5 the story is deterministic: 37 runs.
+run 0 "$MBT" check "$EXAMPLES/atm.json" && has "atm" && has "initial markings: atm-lobby, atm-drivein, atm-branch" \
+    && has "target markings:  visit-done, visit-aborted" && has "error markings:   card-swallowed"
+rm -f "$TMP/atm.jsonl"
+run 0 "$MBT" run "$EXAMPLES/atm.json" --simulate --sim-seed 5 --max-runs 45 --quiescence 40 \
+    --log "$TMP/atm.jsonl" --quiet --json "$TMP/atm.json" \
+    && has "the good target marking 'visit-done' was reached"
+grep -q '"stop_reason":"the good target marking '"'"'visit-done'"'"' was reached"' "$TMP/atm.json" \
+    || fail "json does not name the good-target stop reason"
+grep -q '"good_target":"visit-done"' "$TMP/atm.json" || fail "json does not name the reached good target"
+for t in confiscate session_fail db_fail atm_fail; do
+    grep -q "\"id\":\"$t\"" "$TMP/atm.json" || fail "json does not report error transition $t"
+done
+grep -q '"name":"card-swallowed".*"satisfied":true' "$TMP/atm.json" \
+    && grep -q '"dumps":1' "$TMP/atm.json" \
+    || fail "the swallowed-card error marking was not hit and dumped"
+grep -q '"catastrophe_time_pricing":true' "$TMP/atm.json" || fail "json does not report the catastrophe pricing"
+# the rotation over the three ATMs is visible in the run log
+for a in atm-lobby atm-drivein atm-branch; do
+    grep -q "\"initial\":\"$a\"" "$TMP/atm.jsonl" || fail "the run log never started at $a"
+done
+# and the crash post-mortems are on the console
+run 0 "$MBT" run "$EXAMPLES/atm.json" --simulate --sim-seed 5 --max-runs 45 --quiescence 40 --no-color \
+    && has "Post-mortems" && has "dump-" && has "unpredictable transitions 1" \
+    && has "priced by the way in"
+
+begin state-limit
+# GLM-5.3-Flash: a graph cut off by --max-states is announced, never mistaken
+# for a deadlock, and the campaign still covers everything it can reach.
+cat >"$TMP/counter.json" <<'EOF'
+{"version":1,"name":"counter",
+ "places":[{"id":"tokens","bound":20}],
+ "transitions":[{"id":"add","kind":"controllable","label":"add"}],
+ "arcs":[{"from":"tokens","to":"add"},{"from":"add","to":"tokens","weight":2}],
+ "markings":{"initial":[{"name":"start","tokens":{"tokens":1}}]}}
+EOF
+run 0 "$MBT" explore "$TMP/counter.json" --max-states 4 && has "4 states, 3 edges" && has "incomplete: state limit"
+run 0 "$MBT" run "$TMP/counter.json" --simulate --quiescence 40 --max-states 4 --no-color \
+    && has "not explored completely" && has "coverage complete"
+
+begin seed
+# GLM-5.3-Flash: --seed steers the tie-breaks of the input choice. A bad seed
+# is a usage error; the same seed reproduces a campaign byte for byte in the
+# JSON report; the report names both seeds (selection and ants). The byte
+# compare uses the counter model, whose single input and lack of autonomous
+# SUT moves make the report deterministic (the drink machine's simulated
+# outputs race the poller, which may legitimately change the campaign).
+run 2 "$MBT" run "$DRINKS" --simulate --seed banana && has "whole number"
+# GLM-5.3-Flash: the report now also carries wall-clock times, which may
+# (legitimately) differ between two identical campaigns; the reproducibility
+# claim is about the SELECTION, so the comparison strips the time fields.
+norm() { sed -E 's/"(duration_ms|wall_ms|mean_run_ms|events_per_s)":[0-9.]+/"\1":0/g' "$1"; }
+run 0 "$MBT" run "$TMP/counter.json" --simulate --quiescence 40 --seed 7 --quiet --json "$TMP/seed-a.json" >/dev/null
+run 0 "$MBT" run "$TMP/counter.json" --simulate --quiescence 40 --seed 7 --quiet --json "$TMP/seed-b.json" >/dev/null
+norm "$TMP/seed-a.json" >"$TMP/seed-a.norm" && norm "$TMP/seed-b.json" >"$TMP/seed-b.norm"
+cmp -s "$TMP/seed-a.norm" "$TMP/seed-b.norm" || fail "the same seed produced different reports"
+grep -q '"seed":7' "$TMP/seed-a.json" || fail "json does not report the selection seed"
+grep -q '"ant_seed":1' "$TMP/seed-a.json" || fail "json does not report the ant seed"
+
+begin time-and-overlap
+# GLM-5.3-Flash: testing time next to coverage, and how much the runs of a
+# campaign overlap.
+run 0 "$MBT" run "$ELEVATOR" --simulate --quiescence 40 --max-runs 3 --no-color \
+    && has "Time  campaign" && has "events/s" && has "mean pairwise Jaccard"
+run 0 "$MBT" run "$ELEVATOR" --simulate --quiescence 40 --max-runs 3 --quiet --json "$TMP/time.json"
+grep -q '"duration_ms":[0-9]' "$TMP/time.json" && grep -q '"wall_ms":[0-9]' "$TMP/time.json" \
+    && grep -q '"events_per_s":[0-9]' "$TMP/time.json" && grep -q '"mean_pairwise"' "$TMP/time.json" \
+    || fail "json lacks the time and overlap criteria"
+
+begin compare
+# GLM-5.3-Flash: the mutual overlap of two campaigns' coverage (Jaccard
+# index): the same log against itself is 100%, two logs compare per run pair,
+# and --csv writes every pair for plots.
+run 0 "$MBT" run "$ELEVATOR" --simulate --quiescence 40 --max-runs 3 --seed 1 --quiet --log "$TMP/cmp-a.jsonl" >/dev/null
+run 0 "$MBT" compare "$ELEVATOR" "$TMP/cmp-a.jsonl" "$TMP/cmp-a.jsonl" --no-color \
+    && has "campaigns as a whole: transitions 100%"
+run 0 "$MBT" run "$ELEVATOR" --simulate --quiescence 40 --max-runs 3 --seed 2 --quiet --log "$TMP/cmp-b.jsonl" >/dev/null
+run 0 "$MBT" compare "$ELEVATOR" "$TMP/cmp-a.jsonl" "$TMP/cmp-b.jsonl" --no-color --csv "$TMP/ov.csv" \
+    && has "Overlap" && has "run against run" && has "transition overlap"
+grep -q '^group,i,j,transitions,states,edges' "$TMP/ov.csv" || fail "csv lacks its header"
+grep -q '^cross,0,0,' "$TMP/ov.csv" || fail "csv lacks cross rows"
+grep -q '^within-a,0,1,' "$TMP/ov.csv" || fail "csv lacks within rows"
+
+begin require-complete
+run 4 "$MBT" run "$ELEVATOR" --simulate --quiescence 40 --max-runs 1 --require-complete --sim-weight jam=0 --sim-weight obstruct=0 --sim-weight clear=0 && has "transitions not definitely covered\|Transitions not definitely covered"
+
+begin deviation-is-a-failure
+run 1 "$MBT" run "$DRINKS" --simulate --quiescence 40 --sim-deviate-after 2 --max-runs 1 && has "deviation" && has "Findings"
+
+begin snapshot-dump-of-a-jam
+run 0 "$MBT" run "$ELEVATOR" --simulate --quiescence 40 --max-runs 2 --sim-weight obstruct=0 --sim-weight clear=0 --sim-weight closed_ev=0 && has "post-mortem" && has "Post-mortems" && has "dump-1.snapshot"
+run 0 "$MBT" run "$ELEVATOR" --simulate --quiescence 40 --max-runs 1 --sim-weight obstruct=0 --sim-weight clear=0 --sim-weight closed_ev=0 --sim-no-snapshot && has "cannot snapshot"
+
+begin run-log-continues-and-reports
+rm -f "$TMP/runs.jsonl"
+run 0 "$MBT" run "$DRINKS" --simulate --quiescence 40 --log "$TMP/runs.jsonl" && has "coverage complete"
+[ -s "$TMP/runs.jsonl" ] || fail "no run log was written"
+run 0 "$MBT" run "$DRINKS" --simulate --quiescence 40 --log "$TMP/runs.jsonl" && has "earlier run(s) restored" && has "coverage complete"
+# GLM-5.3-Flash: the report also traces each covered transition back to its
+# first definite visit (doku section 12, item 2 -- the GUI half of the item
+# was closed as a textual report: coverage and backtraces, no GUI).
+run 0 "$MBT" report "$DRINKS" --log "$TMP/runs.jsonl" \
+    && has "2 of 2 runs replayed" && has "transitions  6 of 6" \
+    && has "Backtraces" && has "start > coin.insert"
+run 2 "$MBT" run "$ELEVATOR" --simulate --log "$TMP/runs.jsonl" && has "different model"
+run 2 "$MBT" report "$ELEVATOR" --log "$TMP/runs.jsonl" && has "different model"
+run 2 "$MBT" report "$DRINKS" --log "$TMP/missing.jsonl" && has "cannot open"
+
+begin agent-as-child-process
+run 0 "$MBT" run "$DRINKS" --agent "$MBT agent-sim $DRINKS" --quiescence 40 && has "mbt-agent-sim" && has "coverage complete" && has "transitions  6 of 6"
+
+# GLM-5.3-Flash: the reference agent shim (doku section 12, item 7): a
+# hand-written C++ SUT wrapped in ISutPlugin + AgentServer, spawned by
+# 'run --agent'. Skipped when the binary was not built (manual runs).
+begin reference-agent
+if [ -n "$REF_AGENT" ] && [ -x "$REF_AGENT" ]; then
+    run 0 "$MBT" run "$AGENTMODEL" --agent "$REF_AGENT" --quiescence 40 \
+        && has "mbt-ref-agent" && has "coverage complete" && has "transitions  6 of 6"
+else
+    echo "skipped: REF_AGENT not set"
+fi
+
+begin agent-that-cannot-be-started
+run 3 "$MBT" run "$DRINKS" --agent "/no/such/agent" && has "cannot run"
+
+begin agent-that-says-nothing
+run 3 "$MBT" run "$DRINKS" --agent "sleep 30" --hello-timeout 300 && has "did not say hello"
+
+begin agent-that-dies-mid-run
+# says hello, accepts the start, then exits: the run must abort, not hang
+cat >"$TMP/dying-agent.sh" <<'EOF'
+#!/bin/sh
+echo '{"type":"hello","protocol":1,"name":"dying","snapshot":false,"crash":false,"restart_ms":0}'
+read line
+echo '{"type":"run_started","ok":true}'
+exit 0
+EOF
+run 3 "$MBT" run "$DRINKS" --agent "sh $TMP/dying-agent.sh" --max-runs 3 --poll 5 --idle-timeout 3000 && has "connection to the agent" && has "aborted"
+
+begin tcp-tool-listens-agent-connects
+"$MBT" run "$DRINKS" --listen 127.0.0.1:0 --quiescence 40 --accept-timeout 20 >"$TMP/listen.out" 2>&1 &
+LISTEN_PID=$!
+BG_PIDS="$BG_PIDS $LISTEN_PID"
+PORT=""
+i=0
+while [ -z "$PORT" ] && [ $i -lt 100 ]; do
+    PORT=$(sed -n 's/.*Waiting for an agent on 127.0.0.1:\([0-9][0-9]*\).*/\1/p' "$TMP/listen.out" | head -1)
+    [ -z "$PORT" ] && sleep 0.1
+    i=$((i + 1))
+done
+if [ -z "$PORT" ]; then fail "the tool never reported its port"; else
+    "$MBT" agent-sim "$DRINKS" --connect "127.0.0.1:$PORT" 2>"$TMP/agent.err" &
+    AGENT_PID=$!
+    BG_PIDS="$BG_PIDS $AGENT_PID"
+    wait "$LISTEN_PID"; code=$?
+    [ "$code" -eq 0 ] || { fail "run --listen exited with $code"; sed 's/^/    | /' "$TMP/listen.out" | head; }
+    grep -q "coverage complete" "$TMP/listen.out" || fail "run --listen did not complete"
+    wait "$AGENT_PID" 2>/dev/null
+fi
+
+begin tcp-agent-listens-tool-connects
+"$MBT" agent-sim "$DRINKS" --listen 127.0.0.1:0 --accept-timeout 20 2>"$TMP/agent2.err" &
+AGENT_PID=$!
+BG_PIDS="$BG_PIDS $AGENT_PID"
+PORT=""
+i=0
+while [ -z "$PORT" ] && [ $i -lt 100 ]; do
+    PORT=$(sed -n 's/.*listening on 127.0.0.1:\([0-9][0-9]*\).*/\1/p' "$TMP/agent2.err" | head -1)
+    [ -z "$PORT" ] && sleep 0.1
+    i=$((i + 1))
+done
+if [ -z "$PORT" ]; then fail "the agent never reported its port"; else
+    run 0 "$MBT" run "$DRINKS" --connect "127.0.0.1:$PORT" --quiescence 40 && has "coverage complete"
+    wait "$AGENT_PID" 2>/dev/null
+fi
+run 3 "$MBT" run "$DRINKS" --connect "127.0.0.1:1" && has "cannot connect"
+
+begin stdio-protocol-over-named-pipes
+mkfifo "$TMP/to-agent" "$TMP/from-agent" 2>/dev/null
+if [ -p "$TMP/to-agent" ]; then
+    # Opening a named pipe blocks until the other end is opened: the two sides must open them in opposite
+    # orders (the agent its output first, the tool its input first), or both wait forever.
+    "$MBT" agent-sim "$DRINKS" >"$TMP/from-agent" <"$TMP/to-agent" 2>/dev/null &
+    BG_PIDS="$BG_PIDS $!"
+    "$MBT" run "$DRINKS" --stdio --quiescence 40 --no-color <"$TMP/from-agent" >"$TMP/to-agent" 2>"$TMP/stdio.out"
+    code=$?
+    [ "$code" -eq 0 ] || { fail "run --stdio exited with $code"; sed 's/^/    | /' "$TMP/stdio.out" | head; }
+    grep -q "coverage complete" "$TMP/stdio.out" || fail "run --stdio did not complete"
+else
+    echo "skipped: no named pipes"
+fi
+
+begin livelock-detection-at-run-time
+# the SUT can only tick and tock; with a short livelock timeout the run must end as a livelock
+run 1 "$MBT" run "$HEARTBEAT" --simulate --quiescence 100 --livelock-timeout 150 --max-runs 1 --sim-step-delay 20 && has "livelock"
+
+echo
+echo "$TESTS tests, $FAILS failure(s)"
+[ "$FAILS" -eq 0 ]

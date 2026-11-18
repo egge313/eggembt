@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "name": "elevator-door",
+
+  "places": [
+    {"id": "closed"},
+    {"id": "opening"},
+    {"id": "open"},
+    {"id": "closing"},
+    {"id": "obstructed", "bound": 1},
+    {"id": "fault", "bound": 1}
+  ],
+
+  "transitions": [
+    {"id": "open_cmd",  "label": "door.open",   "kind": "controllable"},
+    {"id": "opened",    "label": "door.opened", "kind": "observable"},
+    {"id": "close_cmd", "label": "door.close",  "kind": "controllable"},
+    {"id": "closed_ev", "label": "door.closed", "kind": "observable"},
+    {"id": "obstruct",  "kind": "internal"},
+    {"id": "clear",     "kind": "internal"},
+    {"id": "jam",       "kind": "internal"}
+  ],
+
+  "arcs": [
+    {"from": "closed",     "to": "open_cmd"},
+    {"from": "open_cmd",   "to": "opening"},
+    {"from": "opening",    "to": "opened"},
+    {"from": "opened",     "to": "open"},
+
+    {"from": "open",       "to": "close_cmd"},
+    {"from": "close_cmd",  "to": "closing"},
+    {"from": "obstructed", "to": "close_cmd", "type": "inhibitor"},
+    {"from": "closing",    "to": "closed_ev"},
+    {"from": "closed_ev",  "to": "closed"},
+
+    {"from": "open",       "to": "obstruct"},
+    {"from": "obstruct",   "to": "open"},
+    {"from": "obstruct",   "to": "obstructed"},
+    {"from": "obstructed", "to": "obstruct", "type": "inhibitor"},
+    {"from": "obstructed", "to": "clear"},
+
+    {"from": "closing",    "to": "jam"},
+    {"from": "jam",        "to": "fault"}
+  ],
+
+  "markings": {
+    "initial": [
+      {"name": "start", "tokens": {"closed": 1}}
+    ],
+    "target": [
+      {"name": "idle_closed", "tokens": {"closed": 1}}
+    ],
+    "error": [
+      {"name": "jammed", "match": "covers", "tokens": {"fault": 1},
+       "policy": "until_covered", "target_hits": 3, "crash_dump": "snapshot"}
+    ]
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "name": "heartbeat-livelock",
+
+  "places": [
+    {"id": "tick"},
+    {"id": "tock"}
+  ],
+
+  "transitions": [
+    {"id": "emit_tick", "label": "tick", "kind": "observable"},
+    {"id": "emit_tock", "label": "tock", "kind": "observable"}
+  ],
+
+  "arcs": [
+    {"from": "tick", "to": "emit_tick"}, {"from": "emit_tick", "to": "tock"},
+    {"from": "tock", "to": "emit_tock"}, {"from": "emit_tock", "to": "tick"}
+  ],
+
+  "markings": {
+    "initial": [{"name": "start", "tokens": {"tick": 1}}]
+  }
+}
