@@ -9,6 +9,7 @@
 #include "engine/SimulatedSut.h"
 #include "io/JsonNetLoader.h"
 #include "io/PnmlLoader.h"  // GLM-5.3-Flash
+#include "io/PnmlWriter.h"  // DeepSeek V4.1 Flash: PNML export (doku section 27)
 #include "io/RunLogIO.h"
 #include "io/Transports.h"
 #include "model/Fingerprint.h"
@@ -98,11 +99,49 @@ std::optional<Net> loadModel(const std::string &path, const Console &con, bool s
     return *r.net;
 }
 
+// DeepSeek V4.1 Flash: --budget takes a wall-clock duration (doku section 27).
+// A bare number is seconds; ms, s, m and h are accepted (500ms, 90s, 10m,
+// 2h). Zero and anything negative or absurd are refused.
+bool parseDuration(const std::string &text, std::chrono::milliseconds &out)
+{
+    std::size_t i = 0;
+    while (i < text.size() && std::isdigit(static_cast<unsigned char>(text[i])))
+        ++i;
+    if (i == 0 || i > 10)
+        return false;
+    const long long value = std::stoll(text.substr(0, i));
+    const std::string unit = text.substr(i);
+    long long ms = 0;
+    if (unit.empty() || unit == "s")
+        ms = value * 1000;
+    else if (unit == "ms")
+        ms = value;
+    else if (unit == "m")
+        ms = value * 60 * 1000;
+    else if (unit == "h")
+        ms = value * 3600 * 1000;
+    else
+        return false;
+    if (ms <= 0 || ms > 30LL * 24 * 3600 * 1000)  // at most 30 days
+        return false;
+    out = std::chrono::milliseconds(ms);
+    return true;
+}
+
 bool parsePolicy(const std::string &s, TargetPolicy &out)
 {
     if (s == "until_covered") { out = TargetPolicy::UntilCovered; return true; }
     if (s == "once")          { out = TargetPolicy::Once;         return true; }
     if (s == "avoid")         { out = TargetPolicy::Avoid;        return true; }
+    return false;
+}
+
+// DeepSeek V4.1 Flash: --satisfied-target-policy (doku section 28).
+bool parseSatisfiedTargetPolicy(const std::string &s, SatisfiedTargetPolicy &out)
+{
+    if (s == "veto")     { out = SatisfiedTargetPolicy::Veto;     return true; }
+    if (s == "penalise") { out = SatisfiedTargetPolicy::Penalise; return true; }
+    if (s == "ignore")   { out = SatisfiedTargetPolicy::Ignore;   return true; }
     return false;
 }
 
@@ -261,6 +300,7 @@ void printUsage(std::ostream &out)
         << "  run MODEL        test a system (an agent, or the built-in simulator) against the model\n"
         << "  report MODEL     replay a run log and show the coverage reached so far\n"
         << "  compare MODEL    mutual overlap of two run logs' coverage (Jaccard, CSV for plots)\n"
+        << "  export MODEL     write the model as standard PNML, with the eggembt extras as comments\n"  // DeepSeek V4.1 Flash
         << "  agent-sim MODEL  serve a simulated SUT over standard input/output (an agent for 'run')\n"
         << "  version          print the version\n"
         << "  credits          print the credits\n"  // GLM-5.3-Flash
@@ -288,6 +328,17 @@ static void printCommandHelp(std::ostream &out, const std::string &command)
             << "  --list N            show at most N states per kind of finding (default 10)\n"
             << "  --internal-cycles   also report cycles of internal transitions only (divergence)\n"
             << "  --dot FILE          write the graph for Graphviz (at most 5000 states)\n";
+    } else if (command == "export") {
+        // DeepSeek V4.1 Flash: PNML export (doku section 27).
+        out << "eggembt export MODEL [--output FILE] [--strict] [--no-color]\n\n"
+            << "Converts the model to standard PNML (ISO/IEC 15909-2). Places, transitions, arcs and\n"
+            << "the first initial marking are standard PNML; everything PNML cannot express (the\n"
+            << "other initial markings, target and error markings, policies, place bounds,\n"
+            << "transition tags, crash predictions and the testing strategy) is written as XML\n"
+            << "comments and as one machine-readable <toolspecific> block. Those annotations do\n"
+            << "not survive a PNML import -- the JSON model remains the complete specification.\n\n"
+            << "  --output FILE   write to FILE instead of standard output\n"
+            << "  --strict        treat warnings as errors (exit 2)\n";
     } else if (command == "run") {
         out << "eggembt run MODEL (--simulate | --agent \"CMD ARGS\" | --connect HOST:PORT | --listen [ADDR:]PORT | --stdio) [options]\n\n"
             << "Runs test runs against a system until everything explored is covered or a limit is hit.\n\n"
@@ -314,8 +365,12 @@ static void printCommandHelp(std::ostream &out, const std::string &command)
             // GLM-5.3-Flash: switch the time-priced catastrophe pheromones off.
             << "    --flat-catastrophe    catastrophe pheromones stay flat instead of growing with the\n"
             << "                          way into the error state (the wall-clock pricing)\n"
-            // GLM-5.3-Flash: the T-list layer (doku section 16).
-            << "    --tlist N             make the (marking, T-list) pairs a finer pheromone basis\n"
+            << "    --evaporate-between-runs\n"
+            << "                          age the pheromone once per finished run instead of at every\n"
+            << "                          suggestion, so a lesson survives a long run and is still\n"
+            << "                          there when the next run needs it\n"
+            // GLM-5.3-Flash: the T-suffix layer (doku section 16).
+            << "    --tsuffix N             make the (marking, T-suffix) pairs a finer pheromone basis\n"
             << "                          beside the markings: pheromones also remember the recent\n"
             << "                          trace history they were learned under; N is the list\n"
             << "                          length, 0..8 (default 0 = off)\n"
@@ -324,9 +379,27 @@ static void printCommandHelp(std::ostream &out, const std::string &command)
             << "                          when continuing from a run log, start with N percent of\n"
             << "                          the earlier rounds' pheromone strength (default 50;\n"
             << "                          100 = full strength, 0 = ignore their teaching)\n"
+            // DeepSeek V4.1 Flash: the testing strategy (doku section 27).
+            << "    --goal-priority P     balanced | targets | coverage: whether fresh coverage and\n"
+            << "                          targets matter equally, targets and milestones matter more,\n"
+            << "                          or fresh coverage matters more\n"
+            << "                          (default: the model's \"strategy\", else balanced)\n"
+            << "    --error-priority P    balanced | seek | avoid: how much risk on the way into an\n"
+            << "                          error is accepted and how hard an already satisfied error is\n"
+            << "                          avoided (default: the model's \"strategy\", else balanced)\n"
+            << "    --budget DURATION     wall-clock budget for the whole campaign: a bare number is\n"
+            << "                          seconds, or use ms, s, m, h (e.g. 500ms, 90s, 10m, 2h).\n"
+            << "                          The campaign stops at the next run boundary or in the\n"
+            << "                          running run; 0 (the default) means no limit\n"
             << "    --max-states N        limit of the reachability graph (default 1000000)\n"
             << "    --no-analyze          skip the static analysis of the model\n"
             << "    --deadlock-policy P   until_covered | once | avoid (default once)   --livelock-policy P\n"
+            // DeepSeek V4.1 Flash: the phase veto is optional (doku section 28).
+            << "    --satisfied-target-policy P\n"
+            << "                          veto | penalise | ignore: what a satisfied target means\n"
+            << "                          to the suggester (default veto = never plan into one;\n"
+            << "                          penalise = allow it but keep the hazard; ignore = treat\n"
+            << "                          it as an ordinary state)\n"
             << "    --dump-on-deviation M   none | snapshot | crash (default none)  (also --dump-on-deadlock, --dump-on-livelock)\n"
             // GLM-5.3-Flash: the crash-prediction experiment's knobs (doku section 17).
             << "    --crash-level L       credibility level for \"certain deterministic\" crash\n"
@@ -344,14 +417,14 @@ static void printCommandHelp(std::ostream &out, const std::string &command)
             << "    --json FILE           write a machine-readable report\n"
             // DeepSeek V4.1 Flash: the inspection views (doku section 21).
             << "    --coverage-elements   add every known state and edge with its hits to the --json report\n"
-            << "    --dump-pheromone FILE write the colony's pheromone (per edge and T-list pair) as JSON\n"
+            << "    --dump-pheromone FILE write the colony's pheromone (per edge and T-suffix pair) as JSON\n"
             << "    --require-complete    exit 4 if coverage is not complete\n"
             << "    --quiet               only the final report      --no-color\n\n"
             << kSimHelp;
     } else if (command == "report") {
         out << "eggembt report MODEL --log FILE [--json FILE] [--runs | --trace N] [--no-color]\n"
             << "              [--dot FILE] [--coverage-elements] [--dump-pheromone FILE]\n"
-            << "              [--tlist N]\n\n"
+            << "              [--tsuffix N]\n\n"
             << "Replays the run log into the model and shows the coverage reached, what is still uncovered,\n"
             << "the error markings with their budgets, and the findings of the recorded runs.\n\n"
             // DeepSeek V4.1 Flash: the inspection views (doku section 21).
@@ -359,8 +432,8 @@ static void printCommandHelp(std::ostream &out, const std::string &command)
             << "  --trace N            print run N's recorded steps in full\n"
             << "  --dot FILE           write the graph for Graphviz, coloured by the coverage reached\n"
             << "  --coverage-elements  add every known state and edge with its hits to --json FILE\n"
-            << "  --dump-pheromone FILE  write the colony's pheromone (per edge and T-list pair) as JSON\n"
-            << "  --tlist N            rebuild the (marking, T-list) pairs at length N; give the campaign's --tlist\n";
+            << "  --dump-pheromone FILE  write the colony's pheromone (per edge and T-suffix pair) as JSON\n"
+            << "  --tsuffix N            rebuild the (marking, T-suffix) pairs at length N; give the campaign's --tsuffix\n";
     } else if (command == "compare") {
         // GLM-5.3-Flash: the overlap of two campaigns' coverage.
         out << "eggembt compare MODEL LOG_A LOG_B [--csv FILE] [--json FILE] [--no-color]\n\n"
@@ -435,6 +508,8 @@ int cmdCheck(const std::vector<std::string> &argv, std::ostream &out, std::ostre
             out << ", post-mortem " << toString(m.crashDump) << " (at most " << m.maxDumps << ")";
         out << "\n";
     }
+    // DeepSeek V4.1 Flash: the model's testing advice (doku section 27).
+    out << "  strategy: goals " << toString(net->strategy.goals) << ", errors " << toString(net->strategy.errors) << "\n";
 
     if (!args.has("no-explore")) {
         SessionConfig cfg;
@@ -634,6 +709,53 @@ int cmdExplore(const std::vector<std::string> &argv, std::ostream &out, std::ost
 }
 
 // ===========================================================================
+// export
+// ===========================================================================
+
+// DeepSeek V4.1 Flash: PNML export (doku section 27). Without --output the
+// document is the only thing on standard output, so it can be redirected; the
+// model loader's warnings still go to standard error.
+int cmdExport(const std::vector<std::string> &argv, std::ostream &out, std::ostream &err)
+{
+    ArgSpec spec;
+    addCommonSpec(spec);
+    spec.flags.insert("strict");
+    spec.valued.insert("output");
+    Args args;
+    std::string error;
+    Console plain{out, err};
+    if (!parseArgs(argv, spec, args, &error))
+        return usageError(plain, error, "export");
+    const Console con = makeConsole(args, out, err);
+    if (args.has("help")) {
+        printCommandHelp(out, "export");
+        return kExitOk;
+    }
+    if (args.positional.size() != 1)
+        return usageError(con, "expected exactly one model file", "export");
+
+    const std::optional<Net> net = loadModel(args.positional[0], con, args.has("strict"));
+    if (!net)
+        return kExitUsage;
+
+    const std::string document = toPnml(*net);
+    if (!args.given("output")) {
+        out << document;
+        return kExitOk;
+    }
+    std::ofstream f(args.get("output"), std::ios::binary);
+    if (f)
+        f << document;
+    if (!f) {
+        err << "eggembt export: cannot write " << args.get("output") << "\n";
+        return kExitUsage;
+    }
+    out << "PNML written to " << args.get("output") << " (" << net->places.size() << " places, "
+        << net->transitions.size() << " transitions)\n";
+    return kExitOk;
+}
+
+// ===========================================================================
 // report
 // ===========================================================================
 
@@ -643,7 +765,7 @@ int cmdReport(const std::vector<std::string> &argv, std::ostream &out, std::ostr
     addCommonSpec(spec);
     // DeepSeek V4.1 Flash: the inspection views (doku section 21).
     spec.flags.insert({"runs", "coverage-elements"});
-    spec.valued.insert({"log", "json", "trace", "dot", "dump-pheromone", "tlist"});
+    spec.valued.insert({"log", "json", "trace", "dot", "dump-pheromone", "tsuffix"});
     Args args;
     std::string error;
     Console plain{out, err};
@@ -674,13 +796,13 @@ int cmdReport(const std::vector<std::string> &argv, std::ostream &out, std::ostr
         err << con.yellow("warning") << " " << args.get("log") << ": " << w << "\n";
 
     // DeepSeek V4.1 Flash: the log records the steps, not the colony's settings, so
-    // a rebuilt pair store needs the campaign's own --tlist (doku section 21).
-    long long tlist = 0;
-    if (args.given("tlist") && !args.getInt("tlist", tlist, 0, 8, &error))
+    // a rebuilt pair store needs the campaign's own --tsuffix (doku section 21).
+    long long tsuffix = 0;
+    if (args.given("tsuffix") && !args.getInt("tsuffix", tsuffix, 0, 8, &error))
         return usageError(con, error, "report");
 
     SessionConfig cfg;
-    cfg.ants.tlistLength = static_cast<std::size_t>(tlist);
+    cfg.ants.tsuffixLength = static_cast<std::size_t>(tsuffix);
     Session session(*net, cfg);
     std::size_t replayed = 0;
     for (std::size_t i = 0; i < log.contents.runs.size(); ++i) {
@@ -1061,13 +1183,17 @@ int cmdRun(const std::vector<std::string> &argv, std::ostream &stdoutStream, std
     addCommonSpec(spec);
     addSimSpec(spec);
     spec.flags.insert({"simulate", "stdio", "no-ants", "no-analyze", "require-complete", "strict",
-                       "flat-catastrophe", "sync-events", "coverage-elements"});  // DeepSeek V4.1 Flash
+                       "flat-catastrophe", "sync-events", "coverage-elements",
+                       "evaporate-between-runs"});  // DeepSeek V4.1 Flash
     spec.valued.insert({"agent", "connect", "listen", "accept-timeout", "hello-timeout", "max-runs", "max-events",
                         "quiescence", "livelock-timeout", "livelock-min-events", "idle-timeout", "ack-timeout", "poll",
                         "threshold", "initial", "seed", "ant-seed", "max-states", "deadlock-policy", "livelock-policy",
+                        "satisfied-target-policy",  // DeepSeek V4.1 Flash: the phase veto (doku section 28)
                         "dump-on-deviation", "dump-on-deadlock", "dump-on-livelock", "log", "json",
-                        "tlist", "restored-pheromones",
+                        "tsuffix", "restored-pheromones",
                         "crash-level", "crash-attempts", "hook-timeout",
+                        "goal-priority", "error-priority",  // DeepSeek V4.1 Flash: the testing strategy
+                        "budget",  // DeepSeek V4.1 Flash: the wall-clock budget
                         "dump-pheromone"});  // DeepSeek V4.1 Flash
     Args args;
     std::string error;
@@ -1100,7 +1226,7 @@ int cmdRun(const std::vector<std::string> &argv, std::ostream &stdoutStream, std
     SessionConfig cfg;
     long long maxRuns = 20, maxEvents = 10000, quiescence = 500, livelock = 0, minEvents = 3, idle = 10000,
               ack = 5000, poll = 20, threshold = 1, antSeed = 1, maxStates = 1000000, helloTimeout = 10000,
-              acceptTimeout = 60, seed = 0, tlist = 0, restoredPheromones = 50, crashAttempts = 6,
+              acceptTimeout = 60, seed = 0, tsuffix = 0, restoredPheromones = 50, crashAttempts = 6,
               hookTimeout = 60;  // GLM-5.3-Flash: synchronous command hooks
     double crashLevel = 0.95;  // GLM-5.3-Flash
     bool ok = args.getInt("max-runs", maxRuns, 1, 100000000, &error) &&
@@ -1117,7 +1243,7 @@ int cmdRun(const std::vector<std::string> &argv, std::ostream &stdoutStream, std
               args.getInt("max-states", maxStates, 1, 100000000, &error) &&
               args.getInt("hello-timeout", helloTimeout, 1, 3600000, &error) &&
               args.getInt("accept-timeout", acceptTimeout, 1, 86400, &error) &&
-              args.getInt("tlist", tlist, 0, 8, &error) &&  // GLM-5.3-Flash
+              args.getInt("tsuffix", tsuffix, 0, 8, &error) &&  // GLM-5.3-Flash
               args.getInt("restored-pheromones", restoredPheromones, 0, 100, &error) &&  // GLM-5.3-Flash
               args.getDouble("crash-level", crashLevel, 0.5, 1.0, &error) &&  // GLM-5.3-Flash
               args.getInt("crash-attempts", crashAttempts, 1, 1000000, &error) &&  // GLM-5.3-Flash
@@ -1135,10 +1261,10 @@ int cmdRun(const std::vector<std::string> &argv, std::ostream &stdoutStream, std
     cfg.coverage.threshold = static_cast<std::uint32_t>(threshold);
     cfg.ants.seed = static_cast<std::uint64_t>(antSeed);
     cfg.selectionSeed = static_cast<std::uint64_t>(seed);  // GLM-5.3-Flash
-    // GLM-5.3-Flash: the T-list layer (doku section 16). 0 (the default)
-    // switches it off; N > 0 makes the (marking, T-list) pairs a finer
+    // GLM-5.3-Flash: the T-suffix layer (doku section 16). 0 (the default)
+    // switches it off; N > 0 makes the (marking, T-suffix) pairs a finer
     // pheromone basis beside the edge channels.
-    cfg.ants.tlistLength = static_cast<std::size_t>(tlist);
+    cfg.ants.tsuffixLength = static_cast<std::size_t>(tsuffix);
     // GLM-5.3-Flash: how much of the inherited pheromone teaching a continued
     // campaign starts with (doku section 16). 100 keeps the old full
     // strength, 0 ignores it; the merge of the earlier runs is unchanged.
@@ -1159,11 +1285,36 @@ int cmdRun(const std::vector<std::string> &argv, std::ostream &stdoutStream, std
     // DeepSeek V4.1 Flash: --sync-events holds the SUT at the model's "sync" events
     // until the tracker acknowledged them (doku section 19).
     cfg.syncEvents = args.has("sync-events");
+    // DeepSeek V4.1 Flash: evaporate the pheromone at run boundaries instead
+    // of at every suggestion (doku section 27).
+    cfg.evaporateBetweenRuns = args.has("evaporate-between-runs");
 
+    // DeepSeek V4.1 Flash: the testing strategy (doku section 27). Unset means
+    // the model's own "strategy" block, or Balanced when it has none.
+    if (args.given("goal-priority")) {
+        GoalPriority priority;
+        if (!parseGoalPriority(args.get("goal-priority"), priority))
+            return usageError(log, "--goal-priority must be balanced, targets or coverage", "run");
+        cfg.goalPriority = priority;
+    }
+    if (args.given("error-priority")) {
+        ErrorPriority priority;
+        if (!parseErrorPriority(args.get("error-priority"), priority))
+            return usageError(log, "--error-priority must be balanced, seek or avoid", "run");
+        cfg.errorPriority = priority;
+    }
+    // DeepSeek V4.1 Flash: the campaign's wall-clock budget (doku section 27).
+    if (args.given("budget") && !parseDuration(args.get("budget"), cfg.timeBudget))
+        return usageError(log, "--budget must be a positive duration: bare seconds, or ms/s/m/h (e.g. 500ms, 90s, 10m)",
+                          "run");
     if (args.given("deadlock-policy") && !parsePolicy(args.get("deadlock-policy"), cfg.targets.deadlock))
         return usageError(log, "--deadlock-policy must be until_covered, once or avoid", "run");
     if (args.given("livelock-policy") && !parsePolicy(args.get("livelock-policy"), cfg.targets.livelock))
         return usageError(log, "--livelock-policy must be until_covered, once or avoid", "run");
+    // DeepSeek V4.1 Flash: --satisfied-target-policy (doku section 28).
+    if (args.given("satisfied-target-policy")
+        && !parseSatisfiedTargetPolicy(args.get("satisfied-target-policy"), cfg.suggester.satisfiedTargets))
+        return usageError(log, "--satisfied-target-policy must be veto, penalise or ignore", "run");
     const std::pair<const char *, DumpMode *> dumpOptions[] = {{"dump-on-deviation", &cfg.dumps.onDeviation},
                                                                 {"dump-on-deadlock", &cfg.dumps.onDeadlock},
                                                                 {"dump-on-livelock", &cfg.dumps.onLivelock}};
@@ -1353,6 +1504,9 @@ int cmdRun(const std::vector<std::string> &argv, std::ostream &stdoutStream, std
     log.out << "  targets: deadlock " << toString(sessionCfg.targets.deadlock) << ", livelock "
             << toString(sessionCfg.targets.livelock) << "; coverage threshold " << sessionCfg.coverage.threshold
             << "\n";
+    // DeepSeek V4.1 Flash: what the suggester does with a satisfied target
+    // (doku section 28). Veto is the default and the historical behaviour.
+    log.out << "  satisfied targets: " << toString(sessionCfg.suggester.satisfiedTargets) << "\n";
     log.out << "  post-mortems: on deviation " << toString(sessionCfg.dumps.onDeviation) << ", on deadlock "
             << toString(sessionCfg.dumps.onDeadlock) << ", on livelock " << toString(sessionCfg.dumps.onLivelock)
             << "\n";
@@ -1378,6 +1532,15 @@ int cmdRun(const std::vector<std::string> &argv, std::ostream &stdoutStream, std
             ++milestoneCount;
     log.out << "  milestones: deposit " << sessionCfg.ants.depositMilestone
             << " per rank; milestone transitions " << milestoneCount << "\n";
+
+    // DeepSeek V4.1 Flash: the effective testing strategy and the evaporation
+    // boundary (doku section 27), so a campaign's console says how it was
+    // steered next to the other guidance switches.
+    log.out << "  strategy: goals " << toString(sessionCfg.goalPriority.value_or(GoalPriority::Balanced))
+            << ", errors " << toString(sessionCfg.errorPriority.value_or(ErrorPriority::Balanced)) << "\n";
+    log.out << "  evaporation: "
+            << (sessionCfg.evaporateBetweenRuns ? "between runs (--evaporate-between-runs)" : "per suggestion")
+            << "\n";
 
     // GLM-5.3-Flash: the command hooks of the model and their bound, so the
     // feature is visible next to the other switches. Nothing when the model

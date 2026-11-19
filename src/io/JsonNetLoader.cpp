@@ -901,6 +901,35 @@ void parseMarkingList(const JsonValue &arr, const std::string &base, Role role, 
     }
 }
 
+// DeepSeek V4.1 Flash: the model's testing strategy (doku section 27). Optional;
+// the command line can override both priorities.
+void parseStrategy(const JsonValue &root, Net &net, Diag &d)
+{
+    const std::string base = "$.strategy";
+    const JsonValue *v = root.find("strategy");
+    if (!v)
+        return;
+    if (!v->isObject()) {
+        d.error(base, "must be an object");
+        return;
+    }
+    warnUnknownKeys(*v, {"goals", "errors"}, base, d);
+    if (const JsonValue *g = v->find("goals")) {
+        if (!g->isString())
+            d.error(sub(base, "goals"), "must be a string (balanced, targets or coverage)");
+        else if (!parseGoalPriority(g->asString(), net.strategy.goals))
+            d.error(sub(base, "goals"),
+                    "unknown goal priority " + quoted(g->asString()) + " (balanced, targets or coverage)");
+    }
+    if (const JsonValue *e = v->find("errors")) {
+        if (!e->isString())
+            d.error(sub(base, "errors"), "must be a string (balanced, seek or avoid)");
+        else if (!parseErrorPriority(e->asString(), net.strategy.errors))
+            d.error(sub(base, "errors"),
+                    "unknown error priority " + quoted(e->asString()) + " (balanced, seek or avoid)");
+    }
+}
+
 void parseMarkings(const JsonValue &root, Net &net, Diag &d)
 {
     const std::string base = "$.markings";
@@ -957,7 +986,8 @@ LoadResult JsonNetLoader::loadValue(const JsonValue &root)
         return r;
     }
 
-    warnUnknownKeys(root, {"$schema", "version", "name", "places", "transitions", "arcs", "markings"}, "$", d);
+    warnUnknownKeys(root, {"$schema", "version", "name", "places", "transitions", "arcs", "markings", "strategy"}, "$",
+                    d);  // DeepSeek V4.1 Flash: "strategy"
 
     if (const JsonValue *version = root.find("version")) {
         std::uint32_t v = 0;
@@ -975,6 +1005,7 @@ LoadResult JsonNetLoader::loadValue(const JsonValue &root)
     parseArcs(root, net, d);
     finishTransitions(net, d);
     parseMarkings(root, net, d);
+    parseStrategy(root, net, d);  // DeepSeek V4.1 Flash: doku section 27
 
     LoadResult result;
     const bool failed = d.hasErrors();

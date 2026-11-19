@@ -10,9 +10,14 @@
 // away competes sensibly with a never-covered transition three steps away.
 //
 // WHAT IS OFF LIMITS: states of satisfied targets (TargetBoard::Forbidden).
-// A candidate whose every possible effect leads straight into one is VETOED,
-// plans never pass through one, and a candidate that leads there from only
-// some of the possible states is penalised by the hazard fraction.
+// With the default phase policy (SatisfiedTargetPolicy::Veto), a candidate
+// whose every possible effect leads straight into one is VETOED, plans never
+// pass through one, and a candidate that leads there from only some of the
+// possible states is penalised by the hazard fraction. DeepSeek V4.1 Flash:
+// --satisfied-target-policy can relax the hard part: Penalise lets plans
+// enter and pass through a satisfied target but keeps the hazard, Ignore
+// treats the states as ordinary. The Seeking -> Satisfied transition itself
+// is untouched; only the suggester's reaction to it changes.
 //
 // HOW CANDIDATES ARE RANKED. Every input enabled in at least one possible
 // state (BeliefTracker::enabledControllable) is a candidate. Its score is the
@@ -32,7 +37,7 @@
 //               the input's edges (as a fraction of tauMax) lowers the score,
 //               the mean repellent pheromone raises it. The same means carry
 //               the static nontarget region with the repellent channel, and
-//               -- with the T-list layer on -- the (marking, T-list) pair
+//               -- with the T-suffix layer on -- the (marking, T-suffix) pair
 //               pheromone of the arrival context each edge would create,
 //               arrived at with the live run's trace extended by the edge's
 //               step (GLM-5.3-Flash, doku section 16).
@@ -54,7 +59,7 @@
 #include "engine/LivelockAnalysis.h"
 #include "engine/ReachabilityGraph.h"
 #include "engine/ReverseIndex.h"
-#include "engine/TList.h"
+#include "engine/TSuffix.h"
 #include "engine/TargetBoard.h"
 
 #include <cstdint>
@@ -64,6 +69,31 @@
 namespace pn {
 
 class AntColony;
+
+// DeepSeek V4.1 Flash: how the suggester reacts to a SATISFIED target
+// (TargetBoard::Forbidden). The phase transition itself is unchanged; this
+// only decides what the plan search and the hard veto do with the states.
+//
+//   Veto      the historical behaviour: refuse every candidate whose every
+//             effect enters one, never plan through one
+//   Penalise  allow the move and the plan, but keep the hazard fraction in
+//             the score (a certain entry costs hazardWeight steps)
+//   Ignore    allow the move and the plan, and do not count the hazard
+//
+// The run outcome is not changed: a run that reaches a satisfied error
+// marking is still ErrorReached, and an intentional target still ends the
+// campaign. The switch only says whether the suggester may choose the move.
+enum class SatisfiedTargetPolicy : std::uint8_t { Veto, Penalise, Ignore };
+
+inline const char *toString(SatisfiedTargetPolicy policy)
+{
+    switch (policy) {
+    case SatisfiedTargetPolicy::Veto:     return "veto";
+    case SatisfiedTargetPolicy::Penalise: return "penalise";
+    case SatisfiedTargetPolicy::Ignore:   return "ignore";
+    }
+    return "veto";
+}
 
 struct SuggesterConfig {
     std::size_t expansionBudget = 500;   // states expanded ahead per suggestion
@@ -76,6 +106,10 @@ struct SuggesterConfig {
     double pheromoneAttractWeight = 1.0;  // in steps, at full (tauMax) pheromone
     double pheromoneRepelWeight = 3.0;
     TargetPolicies targets;
+
+    // DeepSeek V4.1 Flash: what a satisfied target means to the suggester
+    // (--satisfied-target-policy). Veto is the historical hard refusal.
+    SatisfiedTargetPolicy satisfiedTargets = SatisfiedTargetPolicy::Veto;
 
     // GLM-5.3-Flash: 0 breaks exact ties deterministically (more robust input,
     // then lower transition index); a non-zero seed chooses reproducibly at
@@ -103,6 +137,7 @@ struct Suggestion {
     GoalTier goal = GoalTier::None;
     std::string reason;
     std::vector<std::string> vetoed; // labels refused because they lead straight into a forbidden state
+                                     // (DeepSeek V4.1 Flash: only under SatisfiedTargetPolicy::Veto)
 };
 
 class Suggester {
@@ -117,7 +152,7 @@ public:
     // with nullptr).
     void setAntColony(const AntColony *ants) { ants_ = ants; }
 
-    // GLM-5.3-Flash: the live run's T-list cascade (doku section 16). The
+    // GLM-5.3-Flash: the live run's T-suffix cascade (doku section 16). The
     // session sets it once; it must outlive the suggester (the session owns
     // it). Only read when the attached colony has the pair layer on.
     void setTraceCascade(const TraceCascade *trace) { trace_ = trace; }
@@ -136,7 +171,7 @@ private:
     TargetBoard board_;
     ReverseIndex reverse_;
     const AntColony *ants_ = nullptr;
-    const TraceCascade *trace_ = nullptr;  // GLM-5.3-Flash: the run's T-list
+    const TraceCascade *trace_ = nullptr;  // GLM-5.3-Flash: the run's T-suffix
     std::uint64_t tieCall_ = 0;  // GLM-5.3-Flash: advances with every random tie-break
 };
 

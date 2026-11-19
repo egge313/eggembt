@@ -7,7 +7,7 @@
 #include "engine/CoverageDb.h"
 #include "engine/ReachabilityGraph.h"
 #include "engine/Suggester.h"
-#include "engine/TList.h"
+#include "engine/TSuffix.h"
 #include "model/NetBuilder.h"
 
 #include <cmath>
@@ -275,6 +275,57 @@ static void testCatastrophesRepelAndAreAvoidedAfterwards()
         colony.iterate({});
     CHECK(colony.repel(go) < before);
     CHECK(near(colony.repel(go), before * std::pow(0.98, 50), before * 0.01));
+}
+
+// DeepSeek V4.1 Flash: evaporation can wait for the run boundary (doku
+// section 27). Without it, a lesson halves every ~34 suggestions: a run with
+// hundreds of suggestions keeps only a few percent of what it learned early.
+// With the boundary, the ants still walk, but one run costs one aging step.
+static void testAgingCanWaitForTheRunBoundary()
+{
+    const Net net = makeChain(false);
+    ReachabilityGraph rg(net);
+    rg.addInitial(0);
+    rg.exploreAll();
+    CoverageDb db(rg);
+
+    const auto t2 = *net.findTransition("t2");  // S2 -> S3
+    const StateId s3 = findState(rg, Marking{0, 0, 0, 1, 0, 0, 0, 0});
+    const EdgeId intoS3 = *rg.findEdge(s3 - 1, t2);
+
+    AntConfig cfg;
+    cfg.tsuffixLength = 4;
+    cfg.antsPerIteration = 0;  // no walks: only the aging is under test
+    AntColony colony(rg, db, cfg);
+    TraceCascade cascade;
+    cascade.setLength(4);
+    cascade.push(stepHashOf(net.transitions[t2]));
+
+    colony.depositRepel(s3, 9.0);
+    colony.depositPairRepel(s3, cascade, 9.0);
+    const double edgeBefore = colony.repel(intoS3);
+    const double pairBefore = colony.pairRepel(s3, cascade);
+    CHECK(near(edgeBefore, 9.0));
+    CHECK(near(pairBefore, 9.0));
+
+    // 200 suggestions of one long run: nothing ages.
+    for (int i = 0; i < 200; ++i)
+        colony.iterate({}, /*evaporate=*/false);
+    CHECK(near(colony.repel(intoS3), edgeBefore));
+    CHECK(near(colony.pairRepel(s3, cascade), pairBefore));
+
+    // One run boundary: exactly one evaporation step.
+    colony.age();
+    CHECK(near(colony.repel(intoS3), edgeBefore * 0.98, 1e-6));
+    CHECK(near(colony.pairRepel(s3, cascade), pairBefore * 0.98, 1e-6));
+
+    // The old behaviour: 200 per-suggestion agings leave 1.8% of the lesson.
+    AntColony perSuggestion(rg, db, cfg);
+    perSuggestion.depositRepel(s3, 9.0);
+    for (int i = 0; i < 200; ++i)
+        perSuggestion.iterate({});
+    CHECK(near(perSuggestion.repel(intoS3), 9.0 * std::pow(0.98, 200), 1e-3));
+    CHECK(perSuggestion.repel(intoS3) < 0.02 * 9.0);
 }
 
 static void testUnexploredTerritoryAttractsAndLazyExpansionIsBudgeted()
@@ -696,10 +747,10 @@ static void testTheRegionSteersTheSuggester()
 }
 
 // ---------------------------------------------------------------------------
-// GLM-5.3-Flash: the T-list layer (doku section 16)
+// GLM-5.3-Flash: the T-suffix layer (doku section 16)
 // ---------------------------------------------------------------------------
 
-// GLM-5.3-Flash: a T-list is a list of truncated traces, each element a
+// GLM-5.3-Flash: a T-suffix is a list of truncated traces, each element a
 // mini-hash created from the current trace. THE SUFFIX CASCADE, EXACTLY. A
 // run's trace is its sequence of steps s_1, ..., s_m, each hashed by
 // stepHashOf() of the transition that fired. With kTraceSeed as the hash of
@@ -725,7 +776,7 @@ static void testTraceCascadeFollowsTheRecurrence()
     TraceCascade tc;
     tc.setLength(4);
     CHECK(tc.length() == 4);
-    CHECK(tc.elements()[0] == kTraceSeed && tc.elements()[kMaxTList - 1] == kTraceSeed);
+    CHECK(tc.elements()[0] == kTraceSeed && tc.elements()[kMaxTSuffix - 1] == kTraceSeed);
 
     for (std::size_t m = 1; m <= steps.size(); ++m) {
         tc.push(steps[m - 1]);
@@ -745,14 +796,14 @@ static void testTraceCascadeFollowsTheRecurrence()
     tc.reset();
     CHECK(tc.elements()[0] == kTraceSeed && tc.elements()[3] == kTraceSeed);
 
-    // The length is capped at kMaxTList; 0 is off.
+    // The length is capped at kMaxTSuffix; 0 is off.
     TraceCascade capped;
     capped.setLength(1000);
-    CHECK(capped.length() == kMaxTList);
+    CHECK(capped.length() == kMaxTSuffix);
     capped.setLength(0);
     CHECK(capped.length() == 0);
-    capped.setLength(kMaxTList + 1);
-    CHECK(capped.length() == kMaxTList);
+    capped.setLength(kMaxTSuffix + 1);
+    CHECK(capped.length() == kMaxTSuffix);
 
     // extended() pushes one step on a copy; the original is untouched.
     TraceCascade base;
@@ -782,7 +833,7 @@ static void testTraceCascadeFollowsTheRecurrence()
     CHECK(ab.elements()[1] != ba.elements()[1]);
 
     // Two traces ending in the same two steps share the first two elements
-    // and differ from the third on: the T-list identifies the arrival ROUTE.
+    // and differ from the third on: the T-suffix identifies the arrival ROUTE.
     TraceCascade a, b;
     a.setLength(4);
     b.setLength(4);
@@ -828,7 +879,7 @@ static void testPairsSeparateRoutesAndAreCapped()
     const StateId s1 = rg.edge(ex).target;
 
     AntConfig cfg;
-    cfg.tlistLength = 4;
+    cfg.tsuffixLength = 4;
     CoverageDb db(rg);
     AntColony colony(rg, db, cfg);
 
@@ -860,7 +911,7 @@ static void testPairsSeparateRoutesAndAreCapped()
     {   // the default is off: the deposits are no-ops, the store stays empty
         CoverageDb db2(rg);
         AntColony off(rg, db2);
-        CHECK(off.tlistLength() == 0);
+        CHECK(off.tsuffixLength() == 0);
         off.depositPairAttract(s1, viaX, 5.0);
         off.depositPairRepel(s1, viaX, 5.0);
         CHECK(off.pairCount() == 0);
@@ -878,7 +929,7 @@ static void testPairsEvaporateAndArePruned()
     const StateId s1 = findState(rg, Marking{0, 1});
 
     AntConfig cfg;
-    cfg.tlistLength = 4;
+    cfg.tsuffixLength = 4;
     cfg.antsPerIteration = 2;  // the walks are irrelevant here; keep them cheap
     cfg.maxSteps = 4;
     CoverageDb db(rg);
@@ -927,7 +978,7 @@ static Net makeTwoTargetNet()
 }
 
 // DeepSeek V4.1 Flash: the readable view of the pair store (--dump-pheromone,
-// doku section 21): every entry carries its state, its T-list and both
+// doku section 21): every entry carries its state, its T-suffix and both
 // channels, sorted so a dump is reproducible.
 static void testPairEntriesAreReadableAndSorted()
 {
@@ -943,13 +994,13 @@ static void testPairEntriesAreReadableAndSorted()
     const StateId s2 = rg.edge(ey).target;
 
     AntConfig cfg;
-    cfg.tlistLength = 4;
+    cfg.tsuffixLength = 4;
     CoverageDb db(rg);
     AntColony colony(rg, db, cfg);
     CHECK(colony.pairEntries().empty());  // nothing deposited yet
 
     // The two routes may converge on the same marking, so a row is identified
-    // by its T-list element, not by its state.
+    // by its T-suffix element, not by its state.
     TraceCascade viaX;
     viaX.setLength(4);
     viaX.push(stepHashOf(net.transitions[tx]));
@@ -966,12 +1017,12 @@ static void testPairEntriesAreReadableAndSorted()
     CHECK(rows[0].state <= rows[1].state);  // sorted by state first
     bool sawX = false, sawY = false;
     for (const AntColony::PairEntry &e : rows) {
-        if (e.tlist == viaX.elements()) {
+        if (e.tsuffix == viaX.elements()) {
             sawX = true;
             CHECK(e.state == s1);
             CHECK(near(e.attract, 1.5));
             CHECK(near(e.repel, 0.25));
-        } else if (e.tlist == viaY.elements()) {
+        } else if (e.tsuffix == viaY.elements()) {
             sawY = true;
             CHECK(e.state == s2);
             CHECK(near(e.attract, 2.0));
@@ -993,7 +1044,7 @@ static void testPairWeightRidesOnTheEdgeWeight()
     const StateId sx = rg.edge(ex).target;
 
     AntConfig cfg;
-    cfg.tlistLength = 4;
+    cfg.tsuffixLength = 4;
     CoverageDb db(rg);
     AntColony colony(rg, db, cfg);
 
@@ -1036,7 +1087,7 @@ static void testPairLayerSteersTheSuggester()
 
     {   // a catastrophe suffered via the x route repels that route only
         AntConfig cfg;
-        cfg.tlistLength = 4;
+        cfg.tsuffixLength = 4;
         AntColony colony(rg, db, cfg);
         colony.depositPairRepel(sx, trace.extended(hx), 2.0);
         Suggester sg(rg, db);
@@ -1046,7 +1097,7 @@ static void testPairLayerSteersTheSuggester()
     }
     {   // a milestone reached via the y route attracts that route only
         AntConfig cfg;
-        cfg.tlistLength = 4;
+        cfg.tsuffixLength = 4;
         AntColony colony(rg, db, cfg);
         colony.depositPairAttract(sy, trace.extended(hy), 5.0);
         Suggester sg(rg, db);
@@ -1056,7 +1107,7 @@ static void testPairLayerSteersTheSuggester()
     }
     {   // without the run cascade the pairs are not consulted at all
         AntConfig cfg;
-        cfg.tlistLength = 4;
+        cfg.tsuffixLength = 4;
         AntColony colony(rg, db, cfg);
         colony.depositPairRepel(sx, trace.extended(hx), 2.0);
         Suggester sg(rg, db);
@@ -1067,7 +1118,7 @@ static void testPairLayerSteersTheSuggester()
         CoverageDb db2(rg);
         BeliefTracker tr2(rg, &db2);
         tr2.beginRun(0);
-        AntColony colony(rg, db2);  // tlistLength 0 (the default)
+        AntColony colony(rg, db2);  // tsuffixLength 0 (the default)
         Suggester sg(rg, db2);
         sg.setAntColony(&colony);
         sg.setTraceCascade(&trace);
@@ -1103,6 +1154,7 @@ int main()
         {"traceCascadeFollowsTheRecurrence", testTraceCascadeFollowsTheRecurrence},  // GLM-5.3-Flash
         {"pairsSeparateRoutesAndAreCapped", testPairsSeparateRoutesAndAreCapped},  // GLM-5.3-Flash
         {"pairsEvaporateAndArePruned", testPairsEvaporateAndArePruned},  // GLM-5.3-Flash
+        {"agingCanWaitForTheRunBoundary", testAgingCanWaitForTheRunBoundary},  // DeepSeek V4.1 Flash
         {"pairWeightRidesOnTheEdgeWeight", testPairWeightRidesOnTheEdgeWeight},  // GLM-5.3-Flash
         {"pairLayerSteersTheSuggester", testPairLayerSteersTheSuggester},  // GLM-5.3-Flash
         {"pairEntriesAreReadableAndSorted", testPairEntriesAreReadableAndSorted},  // DeepSeek V4.1 Flash

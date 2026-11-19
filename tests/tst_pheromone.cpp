@@ -10,11 +10,15 @@
 //   into the crashing shortcut at the start of every following run; with the
 //   colony's edge pheromone alone nothing changes, because a sought crash is
 //   attractive while it is still being reproduced and the attract saturates
-//   the channel; with the (marking, T-list) pair layer on, the catastrophe
+//   the channel; with the (marking, T-suffix) pair layer on, the catastrophe
 //   pair keeps the lesson that the still-sought target's attract cannot
 //   overwrite, and the campaign alternates safe run / crash instead of
 //   crashing every time -- roughly three times the coverage for the same run
 //   budget.
+//
+// The second benchmark (DeepSeek V4.1 Flash) runs the same model with and
+// without --evaporate-between-runs: per-suggestion aging largely forgets a
+// lesson within a long run, aging at run boundaries keeps it (doku section 27).
 //
 // The SUT is a synchronous plug-in (it applies the input while stimulate()
 // runs and pushes its events at once): no thread and no SUT-side moves, so the
@@ -222,8 +226,9 @@ Net makeDiamondNet(int region, std::uint64_t graphSeed)
 
 struct Guidance {
     bool ants = false;
-    std::size_t tlist = 0;
+    std::size_t tsuffix = 0;
     const char *name = "";
+    bool betweenRuns = false;  // DeepSeek V4.1 Flash
 };
 
 struct Outcome {
@@ -242,7 +247,7 @@ Outcome runCampaign(const Net &net, const Guidance &guidance, std::uint64_t seed
     SessionConfig cfg;
     cfg.useAnts = guidance.ants;
     cfg.ants.seed = seed;
-    cfg.ants.tlistLength = guidance.tlist;
+    cfg.ants.tsuffixLength = guidance.tsuffix;
     cfg.selectionSeed = seed;
     cfg.coverage.crashAttempts = 2;
     cfg.poll = std::chrono::milliseconds(0);
@@ -251,6 +256,7 @@ Outcome runCampaign(const Net &net, const Guidance &guidance, std::uint64_t seed
     cfg.maxEventsPerRun = static_cast<std::size_t>(maxEvents);
     cfg.maxRuns = static_cast<std::size_t>(maxRuns);
     cfg.analyzeModel = true;
+    cfg.evaporateBetweenRuns = guidance.betweenRuns;  // DeepSeek V4.1 Flash
 
     Session session(net, cfg);
     const auto t0 = std::chrono::steady_clock::now();
@@ -288,8 +294,8 @@ void testThePheromonesKeepTheCampaignOffACrashingShortcut()
     std::vector<Sample> samples;
     for (std::uint64_t seed : {1ull, 2ull, 3ull}) {
         for (const Guidance &g : {Guidance{false, 0, "no ants"},
-                                  Guidance{true, 0, "ants, no T-list"},
-                                  Guidance{true, 4, "ants, T-list 4"}}) {
+                                  Guidance{true, 0, "ants, no T-suffix"},
+                                  Guidance{true, 4, "ants, T-suffix 4"}}) {
             samples.push_back({seed, g, runCampaign(net, g, seed, kMaxEvents, kMaxRuns)});
         }
     }
@@ -311,7 +317,7 @@ void testThePheromonesKeepTheCampaignOffACrashingShortcut()
                 continue;
             if (!s.guidance.ants)
                 plain = &s.outcome;
-            else if (s.guidance.tlist == 0)
+            else if (s.guidance.tsuffix == 0)
                 edge = &s.outcome;
             else
                 pair = &s.outcome;
@@ -339,6 +345,44 @@ void testThePheromonesKeepTheCampaignOffACrashingShortcut()
     }
 }
 
+// DeepSeek V4.1 Flash: does evaporation ruin progress (doku section 27)?
+// The same benchmark, twice: once with the historical per-suggestion aging
+// and once with --evaporate-between-runs. The default halves a lesson every
+// ~34 suggestions (0.98 per suggestion), so during a run of hundreds of
+// suggestions a lesson from its start is almost gone by its end; at a run
+// boundary one run costs one 2% step. The measured effect below is
+// structural on this model: the per-suggestion campaign crashes at the fork
+// three times in six runs and covers about 586 edges, the between-runs
+// campaign crashes twice, keeps four runs productive and covers about 777.
+void testEvaporationBetweenRunsKeepsProgress()
+{
+    constexpr int kRegion = 1000;
+    constexpr int kMaxEvents = 200;
+    constexpr int kMaxRuns = 6;
+    const std::uint64_t kGraphSeed = 7;
+    const Net net = makeDiamondNet(kRegion, kGraphSeed);
+
+    std::printf("evaporation benchmark: %d runs of %d events, graph seed %llu\n", kMaxRuns, kMaxEvents,
+                (unsigned long long)kGraphSeed);
+    for (std::uint64_t seed : {1ull, 2ull}) {
+        const Guidance perSuggestion{true, 4, "per-suggestion", false};
+        const Guidance betweenRuns{true, 4, "between runs", true};
+        const Outcome per = runCampaign(net, perSuggestion, seed, kMaxEvents, kMaxRuns);
+        const Outcome between = runCampaign(net, betweenRuns, seed, kMaxEvents, kMaxRuns);
+        std::printf("  seed %llu per-suggestion: crashes %zu long %zu covered %zu (%lld ms)\n",
+                    (unsigned long long)seed, per.crashes, per.longRuns, per.covered, (long long)per.wallMs);
+        std::printf("  seed %llu between runs:   crashes %zu long %zu covered %zu (%lld ms)\n",
+                    (unsigned long long)seed, between.crashes, between.longRuns, between.covered,
+                    (long long)between.wallMs);
+
+        CHECK(per.runs == between.runs);  // both hit the same run budget
+        CHECK(between.crashes < per.crashes);
+        CHECK(between.longRuns > per.longRuns);
+        CHECK(between.covered >= per.covered + 100);
+        CHECK(between.stimuli > per.stimuli);
+    }
+}
+
 }  // namespace
 
 int main()
@@ -346,6 +390,7 @@ int main()
     const std::pair<const char *, void (*)()> tests[] = {
         {"thePheromonesKeepTheCampaignOffACrashingShortcut",
          testThePheromonesKeepTheCampaignOffACrashingShortcut},
+        {"evaporationBetweenRunsKeepsProgress", testEvaporationBetweenRunsKeepsProgress},  // DeepSeek V4.1 Flash
     };
     for (const auto &t : tests) {
         const int before = g_failures;

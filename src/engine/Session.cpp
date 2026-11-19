@@ -16,7 +16,56 @@ namespace pn {
 
 namespace {
 
-SessionConfig normalized(SessionConfig c)
+// DeepSeek V4.1 Flash: a goal priority is a preference expressed in the
+// suggester's "steps" currency (lower wins) plus the ants' deposit size. The
+// numbers are deliberately simple and documented in doku section 27.
+void applyGoalPriority(SessionConfig &c, GoalPriority priority)
+{
+    switch (priority) {
+    case GoalPriority::Balanced:
+        break;  // the historical weights: targets and fresh coverage close together
+    case GoalPriority::Targets:
+        // Targets and milestones before fresh coverage: a fresh transition,
+        // edge or frontier must be markedly closer to win, and
+        // target/milestone deposits speak louder.
+        c.suggester.penaltyNewTransition = 2;
+        c.suggester.penaltyEdge = 4;
+        c.suggester.penaltyFrontier = 8;
+        c.ants.depositTarget *= 1.5;
+        c.ants.depositMilestone *= 1.5;
+        break;
+    case GoalPriority::Coverage:
+        // Fresh behaviour before targets: a still-sought target must be
+        // clearly closer than an uncovered edge, so targets stop pulling the
+        // campaign away from plain coverage.
+        c.suggester.penaltyTarget = 4;
+        c.suggester.penaltyEdge = 0;
+        c.suggester.penaltyFrontier = 1;
+        break;
+    }
+}
+
+// DeepSeek V4.1 Flash: error priority scales the two risk terms of the
+// suggester's score. "Seek" accepts a less robust input and more hazard on the
+// way; "avoid" demands robustness and punishes a known way into a satisfied
+// error much harder.
+void applyErrorPriority(SessionConfig &c, ErrorPriority priority)
+{
+    switch (priority) {
+    case ErrorPriority::Balanced:
+        break;
+    case ErrorPriority::Seek:
+        c.suggester.riskWeight = 1.0;
+        c.suggester.hazardWeight = 10.0;
+        break;
+    case ErrorPriority::Avoid:
+        c.suggester.riskWeight = 5.0;
+        c.suggester.hazardWeight = 40.0;
+        break;
+    }
+}
+
+SessionConfig normalized(SessionConfig c, const Net &net)
 {
     c.suggester.targets = c.targets;
     c.suggester.tieBreakSeed = c.selectionSeed;  // GLM-5.3-Flash
@@ -24,6 +73,15 @@ SessionConfig normalized(SessionConfig c)
     // GLM-5.3-Flash: the carry-over factor of the restored pheromones
     // (doku section 16), kept in 0..100 for direct API users.
     c.restoredPheromonePercent = std::clamp(c.restoredPheromonePercent, 0u, 100u);
+    // DeepSeek V4.1 Flash: the strategy (doku section 27). The command line
+    // overrides the model; the model overrides the built-in Balanced default.
+    // The resolved values stay in the config so reports can name them.
+    const GoalPriority goals = c.goalPriority.value_or(net.strategy.goals);
+    const ErrorPriority errors = c.errorPriority.value_or(net.strategy.errors);
+    c.goalPriority = goals;
+    c.errorPriority = errors;
+    applyGoalPriority(c, goals);
+    applyErrorPriority(c, errors);
     return c;
 }
 
@@ -42,7 +100,7 @@ std::string joinLabels(const std::vector<std::string> &labels)
 
 Session::Session(const Net &net, SessionConfig config)
     : net_(net),
-      cfg_(normalized(std::move(config))),
+      cfg_(normalized(std::move(config), net)),  // DeepSeek V4.1 Flash: the net's strategy
       rg_(net_, cfg_.graph),
       db_(rg_, cfg_.coverage),
       tracker_(rg_, &db_, cfg_.tracker),
@@ -63,10 +121,10 @@ Session::Session(const Net &net, SessionConfig config)
       }()),
       queue_(cfg_.eventQueueCapacity)
 {
-    // GLM-5.3-Flash: the T-list layer (doku section 16). The run cascade's
+    // GLM-5.3-Flash: the T-suffix layer (doku section 16). The run cascade's
     // length comes from the ant configuration; the suggester reads it for its
-    // pair consults. With tlistLength 0 both are inert.
-    run_.setLength(cfg_.ants.tlistLength);
+    // pair consults. With tsuffixLength 0 both are inert.
+    run_.setLength(cfg_.ants.tsuffixLength);
     suggester_.setTraceCascade(&run_);
     if (cfg_.useAnts)
         suggester_.setAntColony(&ants_);
@@ -183,8 +241,8 @@ void Session::rebuildCrashExperiment(const PersistedRun &run)
 //     pheromone on its recorded target state (AntConfig::milestoneDeposit;
 //     certain-but-state-ambiguous milestone steps have no definite edge and
 //     are not rebuilt);
-//   - with the T-list layer on (GLM-5.3-Flash, doku section 16), the same
-//     recorded steps also fill the (marking, T-list) pair store: one
+//   - with the T-suffix layer on (GLM-5.3-Flash, doku section 16), the same
+//     recorded steps also fill the (marking, T-suffix) pair store: one
 //     milestone deposit at the arrival pair of its step, one catastrophe
 //     deposit at the arrival pair of the run's end; both flat, the same
 //     amounts as the edge deposits;
@@ -206,7 +264,7 @@ void Session::rebuildPheromones(const PersistedRun &run, const RunRecord &rec)
 {
     // GLM-5.3-Flash: inherited knowledge enters toned down (doku section 16).
     // Every deposit the rebuild lays -- milestone and catastrophe, edge
-    // channels and (marking, T-list) pairs alike -- carries this factor of
+    // channels and (marking, T-suffix) pairs alike -- carries this factor of
     // the amount the live run laid. The merge of several rounds is the
     // accumulation it always was; the factor is applied per deposit, before
     // tauMax caps, so a much-marked edge stays capped at the same ceiling
@@ -214,7 +272,7 @@ void Session::rebuildPheromones(const PersistedRun &run, const RunRecord &rec)
     const double factor = static_cast<double>(cfg_.restoredPheromonePercent) / 100.0;
 
     // --- milestones: positive pheromone at the recorded step targets ---------
-    // GLM-5.3-Flash: the (marking, T-list) pair layer walks the same steps
+    // GLM-5.3-Flash: the (marking, T-suffix) pair layer walks the same steps
     // (doku section 16): the cascade is pushed per recorded step, and every
     // milestone step lands its pair deposit at the arrival pair the record
     // names -- the same walk the live run's cascade took over the same
@@ -222,7 +280,7 @@ void Session::rebuildPheromones(const PersistedRun &run, const RunRecord &rec)
     // back-propagation: the edge channels still do the propagating, the
     // pairs only refine what they already say.
     TraceCascade trace;
-    trace.setLength(cfg_.ants.tlistLength);
+    trace.setLength(cfg_.ants.tsuffixLength);
     for (const RunStep &step : rec.steps) {
         const TransitionIndex t = rg_.edge(step.edge).transition;
         if (t >= net_.transitions.size())
@@ -296,7 +354,7 @@ void Session::rebuildPheromones(const PersistedRun &run, const RunRecord &rec)
     const double amount = factor * cfg_.ants.catastropheDeposit(way);
     if (amount > 0.0) {
         ants_.depositRepel(at, amount);
-        // GLM-5.3-Flash: the same lesson lands in the (marking, T-list) pair
+        // GLM-5.3-Flash: the same lesson lands in the (marking, T-suffix) pair
         // store (doku section 16), flat at the arrival pair: the last recorded
         // arrival -- the initial state when nothing was recorded -- with the
         // trace the run arrived there by. The live deposit sits after endRun for
@@ -326,6 +384,11 @@ RunReport Session::runOnce(ISutPlugin &plugin)
 
     const std::size_t initialIdx = pickInitialMarking();
     const Clock::time_point startedAt = Clock::now();  // GLM-5.3-Flash: run duration
+    // DeepSeek V4.1 Flash: a direct runOnce with a budget gets its own deadline;
+    // runCampaign already set the campaign-wide one.
+    const bool ownDeadline = !deadline_ && cfg_.timeBudget.count() > 0;
+    if (ownDeadline)
+        deadline_ = startedAt + cfg_.timeBudget;
     const PluginCapabilities caps = plugin.capabilities();
 
     // DeepSeek V4.1 Flash: does this run hold synchronized events (doku section
@@ -608,7 +671,7 @@ RunReport Session::runOnce(ISutPlugin &plugin)
         ++hooksFired_[t];
     };
 
-    // GLM-5.3-Flash: the run's T-list cascade (doku section 16). CoverageDb
+    // GLM-5.3-Flash: the run's T-suffix cascade (doku section 16). CoverageDb
     // credits a RunStep only for a step that went over an edge, so the run
     // record's steps are exactly the trace the cascade follows; the restore's
     // rebuild replays the same walk over the same record, which keeps the
@@ -668,6 +731,14 @@ RunReport Session::runOnce(ISutPlugin &plugin)
     };
 
     while (!ended) {
+        // DeepSeek V4.1 Flash: the wall-clock budget (doku section 27). Checked
+        // at every loop turn, so a run that would keep testing ends as a
+        // normal Completed run -- the budget is a planning limit, not a fault.
+        if (deadline_ && Clock::now() >= *deadline_) {
+            rep.budgetReached = true;
+            finish(RunOutcome::Completed, "campaign time budget reached", StopReason::Finished);
+            break;
+        }
         if (stop_) {
             finish(RunOutcome::Aborted, "stopped on request", StopReason::Aborted);
             break;
@@ -742,7 +813,7 @@ RunReport Session::runOnce(ISutPlugin &plugin)
             if (one.lastKind == EventKind::Died)
                 sawDied = true;
             // GLM-5.3-Flash: the credited stream may have grown with this
-            // event: the T-list cascade, the crash attempts and the command
+            // event: the T-suffix cascade, the crash attempts and the command
             // hooks follow it per event, so a hook's "when" guard reads the
             // belief right after the event that made the step certain
             // (doku section 18). A synchronous hook blocks the loop here --
@@ -1063,7 +1134,7 @@ RunReport Session::runOnce(ISutPlugin &plugin)
         // --- guidance ---------------------------------------------------------------------
         if (cfg_.useAnts) {
             for (std::size_t i = 0; i < cfg_.antIterationsPerSuggestion; ++i)
-                ants_.iterate(tracker_.belief());
+                ants_.iterate(tracker_.belief(), /*evaporate=*/!cfg_.evaporateBetweenRuns);
         }
         const Suggestion s = suggester_.suggest(tracker_);
         waiting = false;
@@ -1194,17 +1265,17 @@ RunReport Session::runOnce(ISutPlugin &plugin)
     // GLM-5.3-Flash: the run's final settle (inside endRun) may still have
     // credited the last segment's definite steps, so the cascade is brought
     // up to date only now -- and then the catastrophe lesson lands in the
-    // (marking, T-list) pair store (doku section 16), flat at the arrival
+    // (marking, T-suffix) pair store (doku section 16), flat at the arrival
     // pair the run record names: the last credited arrival, or the initial
     // state when nothing was credited. The restore's rebuild applies the
     // same rule to the same record, so the pair keys agree.
     // GLM-5.3-Flash: the cascade is brought up to date UNCONDITIONALLY: the
-    // pair deposits below need it when the T-list layer is on, and the
+    // pair deposits below need it when the T-suffix layer is on, and the
     // command hooks fire for the credits the final settle adds even when the
     // layer is off (doku section 18).
     hookGuardBelief = finalBelief;
     advanceCascade();
-    if (cfg_.ants.tlistLength > 0) {
+    if (cfg_.ants.tsuffixLength > 0) {
         if (catastropheAmount > 0.0) {
             const StateId at = rec.steps.empty() ? rec.initial : rec.steps.back().target;
             ants_.depositPairRepel(at, run_, catastropheAmount);
@@ -1232,6 +1303,13 @@ RunReport Session::runOnce(ISutPlugin &plugin)
                             + "' did not run: its suspect step was ruled out");
     }
 
+    // DeepSeek V4.1 Flash: the run boundary (doku section 27). Every deposit
+    // this run made -- milestones and catastrophes, the final settle included
+    // -- has landed by now; aging once here instead of at every suggestion is
+    // what lets the lesson survive a long run.
+    if (cfg_.useAnts && cfg_.evaporateBetweenRuns)
+        ants_.age();
+
     rep.outcome = outcome;
     rep.detail = detail;
     rep.events = rec.events.size();
@@ -1246,6 +1324,8 @@ RunReport Session::runOnce(ISutPlugin &plugin)
         cfg_.runSink(toPersisted(rg_, rec));
     if (cfg_.progress)
         cfg_.progress(rep);
+    if (ownDeadline)
+        deadline_.reset();
     return rep;
 }
 
@@ -1258,8 +1338,17 @@ CampaignReport Session::runCampaign(ISutPlugin &plugin)
         analyzeModel();
     report.warnings = warnings_;
 
+    // DeepSeek V4.1 Flash: the wall-clock budget spans the whole campaign, not
+    // each run (doku section 27).
+    if (cfg_.timeBudget.count() > 0)
+        deadline_ = Clock::now() + cfg_.timeBudget;
+
     std::size_t aborts = 0;
     for (std::size_t i = 0; i < cfg_.maxRuns && !stop_; ++i) {
+        if (deadline_ && Clock::now() >= *deadline_) {
+            report.stopReason = "time budget reached";
+            break;
+        }
         RunReport r = runOnce(plugin);
         report.runs.push_back(r);
 
@@ -1270,6 +1359,11 @@ CampaignReport Session::runCampaign(ISutPlugin &plugin)
             }
         } else {
             aborts = 0;
+        }
+        // DeepSeek V4.1 Flash: the run was cut short by the campaign's budget.
+        if (r.budgetReached) {
+            report.stopReason = "time budget reached";
+            break;
         }
         if (r.coverageDone) {
             report.complete = true;
@@ -1285,6 +1379,7 @@ CampaignReport Session::runCampaign(ISutPlugin &plugin)
             break;
         }
     }
+    deadline_.reset();  // DeepSeek V4.1 Flash: the budget belongs to this campaign
     if (report.stopReason.empty())
         report.stopReason = stop_ ? "stopped on request" : "run limit reached";
     report.summary = db_.summary();

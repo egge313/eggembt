@@ -51,9 +51,9 @@
 //     (attract + 0.1)^alpha * novelty^beta * exp(-lambda * (repel + region))
 // where novelty = 1/(1 + hits), or 0.01 for a saturated edge, and `region` is
 // the static nontarget region above (GLM-5.3-Flash). The tester can
-// only choose inputs, hence the two-step draw. With the T-list layer on
+// only choose inputs, hence the two-step draw. With the T-suffix layer on
 // (GLM-5.3-Flash, doku section 16), the input weight gains the (marking,
-// T-list) pair pheromone of the arrival context the edge would create: the
+// T-suffix) pair pheromone of the arrival context the edge would create: the
 // pair attraction joins the base of the power, the pair repulsion joins the
 // exponent of the decay, and the ant's own cascade -- fresh at its start, one
 // step pushed per edge it walks -- is the trace. Environment moves are
@@ -72,7 +72,7 @@
 #include "engine/LivelockAnalysis.h"
 #include "engine/ReachabilityGraph.h"
 #include "engine/ReverseIndex.h"
-#include "engine/TList.h"
+#include "engine/TSuffix.h"
 #include "engine/TargetBoard.h"
 
 #include <algorithm>
@@ -163,9 +163,9 @@ struct AntConfig {
     double pEnvironment = 0.5;           // chance of an environment move when both kinds are possible
     std::function<double(EdgeId)> environmentWeight;  // e.g. observed frequencies; empty: uniform
 
-    // GLM-5.3-Flash: the T-list layer (doku section 16). With N > 0, every
-    // marking carries a T-list -- the mini-hashes of the run trace's last N
-    // steps (a suffix cascade; engine/TList.h) -- and the (marking, T-list)
+    // GLM-5.3-Flash: the T-suffix layer (doku section 16). With N > 0, every
+    // marking carries a T-suffix -- the mini-hashes of the run trace's last N
+    // steps (a suffix cascade; engine/TSuffix.h) -- and the (marking, T-suffix)
     // pairs become a second, finer basis for pheromone generation beside the
     // edge channels: the session's milestone and catastrophe deposits also
     // land in a per-pair store, and ants and suggester weigh an edge under
@@ -173,7 +173,7 @@ struct AntConfig {
     // via one route no longer condemns the same marking reached via another.
     // 0 switches the layer off (the default, so the pinned pheromone amounts
     // keep their exact values).
-    std::size_t tlistLength = 0;
+    std::size_t tsuffixLength = 0;
 
     TargetPolicies targets;              // deadlock / livelock policies (error markings come from the model)
 };
@@ -197,9 +197,18 @@ public:
     void setLivelockFindings(const std::vector<LivelockFinding> &findings);
 
     // One iteration: antsPerIteration ants start from `starts` (e.g. the
-    // tracker's belief), then both channels evaporate and saturated edges lose
-    // their attraction. With no starting states it only ages the pheromone.
-    void iterate(const std::vector<StateId> &starts);
+    // tracker's belief). With evaporate (the default) both channels then
+    // evaporate and saturated edges lose their attraction; with it false the
+    // ants walk but nothing ages -- the caller ages the pheromone at its own
+    // boundary with age() (DeepSeek V4.1 Flash: evaporation between runs,
+    // doku section 27). With no starting states it only ages the pheromone.
+    void iterate(const std::vector<StateId> &starts, bool evaporate = true);
+
+    // DeepSeek V4.1 Flash: ONE evaporation step of both channels and of the
+    // (marking, T-suffix) pair store, plus the saturation rule. Session calls
+    // it once per run when evaporation happens between runs instead of at
+    // every suggestion.
+    void age();
 
     // Back-propagating deposits, for the ants and for callers with their own
     // knowledge (e.g. a catastrophe seen in a real run).
@@ -217,7 +226,7 @@ public:
     // The weight an ant gives to taking input edge `e`.
     double inputWeight(EdgeId e) const;
 
-    // GLM-5.3-Flash: the same weight under the (marking, T-list) pair layer
+    // GLM-5.3-Flash: the same weight under the (marking, T-suffix) pair layer
     // (doku section 16): the pair pheromone of the arrival context `trace`
     // extended by this edge's step rides on top of the edge channels. With
     // the layer off this is inputWeight(e).
@@ -226,21 +235,21 @@ public:
     // GLM-5.3-Flash: the pair store (doku section 16). Deposits are flat at
     // the arrival pair -- no back-propagation, the edge channels still do the
     // propagating -- and capped at tauMax like every deposit. With the layer
-    // off (tlistLength 0) they do nothing.
+    // off (tsuffixLength 0) they do nothing.
     void depositPairAttract(StateId at, const TraceCascade &arrival, double amount);
     void depositPairRepel(StateId at, const TraceCascade &arrival, double amount);
     double pairAttract(StateId at, const TraceCascade &arrival) const;
     double pairRepel(StateId at, const TraceCascade &arrival) const;
-    std::size_t tlistLength() const { return cfg_.tlistLength; }
+    std::size_t tsuffixLength() const { return cfg_.tsuffixLength; }
     std::size_t pairCount() const { return pairs_.size(); }
 
     // DeepSeek V4.1 Flash: the pair store as readable rows, for the pheromone dump
     // (--dump-pheromone, doku section 21). Sorted by (state, list), so the
-    // file does not depend on the hash order. `tlist` is the key in full; only
-    // the first tlistLength() elements are meaningful.
+    // file does not depend on the hash order. `tsuffix` is the key in full; only
+    // the first tsuffixLength() elements are meaningful.
     struct PairEntry {
         StateId state = kNoState;
-        std::array<std::uint32_t, kMaxTList> tlist{};
+        std::array<std::uint32_t, kMaxTSuffix> tsuffix{};
         double attract = 0.0;
         double repel = 0.0;
     };
@@ -255,20 +264,20 @@ public:
     const AntConfig &config() const { return cfg_; }
 
 private:
-    // GLM-5.3-Flash: one (marking, T-list) pair (doku section 16). The key
+    // GLM-5.3-Flash: one (marking, T-suffix) pair (doku section 16). The key
     // carries the whole raw element array; entries at or beyond the configured
     // length stay kTraceSeed, so the key is determined by the length alone.
     struct PairKey {
         StateId state;
-        std::array<std::uint32_t, kMaxTList> tlist;
-        bool operator==(const PairKey &o) const { return state == o.state && tlist == o.tlist; }
+        std::array<std::uint32_t, kMaxTSuffix> tsuffix;
+        bool operator==(const PairKey &o) const { return state == o.state && tsuffix == o.tsuffix; }
     };
     struct PairKeyHash {
         std::size_t operator()(const PairKey &k) const
         {
             // Order-independent fold over the key's words; no std::hash.
             std::uint64_t h = k.state;
-            for (const std::uint32_t w : k.tlist) {
+            for (const std::uint32_t w : k.tsuffix) {
                 h ^= w;
                 h *= 0x9E3779B97F4A7C15ull;  // golden ratio, 64-bit
                 h ^= h >> 29;

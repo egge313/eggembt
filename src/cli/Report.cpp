@@ -494,6 +494,16 @@ JsonValue campaignJson(const Net &net, const Session &session, const CampaignRep
     o.set("model", JsonValue::string(net.name));
     o.set("complete", JsonValue::boolean(report.complete));
     o.set("stop_reason", JsonValue::string(report.stopReason));
+    // DeepSeek V4.1 Flash: the effective testing strategy (doku section 27).
+    if (const auto goals = session.config().goalPriority) {
+        JsonValue strategy = JsonValue::object();
+        strategy.set("goals", JsonValue::string(toString(*goals)));
+        strategy.set("errors", JsonValue::string(toString(*session.config().errorPriority)));
+        o.set("strategy", strategy);
+    }
+    // DeepSeek V4.1 Flash: where the pheromone ages, and the campaign budget.
+    o.set("evaporate_between_runs", JsonValue::boolean(session.config().evaporateBetweenRuns));
+    o.set("time_budget_ms", JsonValue::number(static_cast<double>(session.config().timeBudget.count())));
 
     JsonValue warnings = JsonValue::array();
     for (const std::string &w : report.warnings)
@@ -511,6 +521,8 @@ JsonValue campaignJson(const Net &net, const Session &session, const CampaignRep
         j.set("new_states", JsonValue::number(r.newStates));
         j.set("new_edges", JsonValue::number(r.newEdges));
         j.set("duration_ms", JsonValue::number(static_cast<double>(r.durationMs)));  // GLM-5.3-Flash
+        // DeepSeek V4.1 Flash: this run was cut short by the campaign's budget.
+        j.set("budget_reached", JsonValue::boolean(r.budgetReached));
         // GLM-5.3-Flash: the good target marking the run ended in ("" when none;
         // always emitted so the schema does not depend on the model).
         j.set("good_target", JsonValue::string(r.goodTarget));
@@ -571,6 +583,9 @@ JsonValue campaignJson(const Net &net, const Session &session, const CampaignRep
     o.set("ant_seed", JsonValue::number(static_cast<double>(cfg.ants.seed)));
     o.set("deadlock_policy", JsonValue::string(toString(cfg.targets.deadlock)));
     o.set("livelock_policy", JsonValue::string(toString(cfg.targets.livelock)));
+    // DeepSeek V4.1 Flash: the suggester's reaction to a satisfied target
+    // (doku section 28). Always emitted, so the schema does not depend on it.
+    o.set("satisfied_target_policy", JsonValue::string(toString(cfg.suggester.satisfiedTargets)));
     o.set("dump_on_deviation", JsonValue::string(toString(cfg.dumps.onDeviation)));
     o.set("dump_on_deadlock", JsonValue::string(toString(cfg.dumps.onDeadlock)));
     o.set("dump_on_livelock", JsonValue::string(toString(cfg.dumps.onLivelock)));
@@ -578,10 +593,10 @@ JsonValue campaignJson(const Net &net, const Session &session, const CampaignRep
     // GLM-5.3-Flash: whether the catastrophe pheromones are priced by the way
     // in (--flat-catastrophe switches that off).
     o.set("catastrophe_time_pricing", JsonValue::boolean(cfg.catastropheTimePricing));
-    // GLM-5.3-Flash: the T-list layer (doku section 16). The length of the
+    // GLM-5.3-Flash: the T-suffix layer (doku section 16). The length of the
     // lists, 0 when the layer is off; always emitted so the schema does not
     // depend on the setting.
-    o.set("tlist", JsonValue::number(static_cast<double>(cfg.ants.tlistLength)));
+    o.set("tsuffix", JsonValue::number(static_cast<double>(cfg.ants.tsuffixLength)));
     // GLM-5.3-Flash: how much of the earlier rounds' pheromone teaching a
     // continued campaign starts with, in percent (doku section 16).
     o.set("restored_pheromones", JsonValue::number(static_cast<double>(cfg.restoredPheromonePercent)));
@@ -712,7 +727,7 @@ JsonValue pheromoneJson(const Net &net, const Session &session)
     const AntColony &ants = session.ants();
     JsonValue o = JsonValue::object();
     o.set("model", JsonValue::string(net.name));
-    o.set("tlist", JsonValue::number(static_cast<double>(ants.tlistLength())));
+    o.set("tsuffix", JsonValue::number(static_cast<double>(ants.tsuffixLength())));
     o.set("tau_max", JsonValue::number(ants.tauMax()));
     o.set("iterations", JsonValue::number(static_cast<double>(ants.stats().iterations)));
     o.set("ant_walks", JsonValue::number(static_cast<double>(ants.stats().ants)));
@@ -745,9 +760,9 @@ JsonValue pheromoneJson(const Net &net, const Session &session)
         JsonValue j = JsonValue::object();
         j.set("state", JsonValue::string(formatMarking(net, rg.marking(p.state))));
         JsonValue list = JsonValue::array();
-        for (std::size_t k = 0; k < ants.tlistLength() && k < kMaxTList; ++k)
-            list.push(JsonValue::number(static_cast<double>(p.tlist[k])));
-        j.set("tlist", list);
+        for (std::size_t k = 0; k < ants.tsuffixLength() && k < kMaxTSuffix; ++k)
+            list.push(JsonValue::number(static_cast<double>(p.tsuffix[k])));
+        j.set("tsuffix", list);
         j.set("attract", JsonValue::number(p.attract));
         j.set("repel", JsonValue::number(p.repel));
         pairs.push(j);

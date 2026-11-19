@@ -141,6 +141,12 @@ Suggestion Suggester::suggest(const BeliefTracker &tracker)
     reverse_.sync();
     board_.refresh();
 
+    // DeepSeek V4.1 Flash: the phase policy (--satisfied-target-policy).
+    // Veto keeps the historical hard refusal; Penalise lets plans enter a
+    // satisfied target but keeps its hazard; Ignore does not even count it.
+    const bool vetoSatisfied = cfg_.satisfiedTargets == SatisfiedTargetPolicy::Veto;
+    const bool hazardSatisfied = cfg_.satisfiedTargets != SatisfiedTargetPolicy::Ignore;
+
     // --- distance to the nearest goal: one backward Dijkstra over the explored graph ----------
     const std::size_t n = rg_.numStates();
     std::vector<std::uint32_t> cost(n, kInf);
@@ -162,7 +168,10 @@ Suggestion Suggester::suggest(const BeliefTracker &tracker)
     };
 
     for (StateId u = 0; u < n; ++u) {
-        if (board_.forbidden(u))
+        // DeepSeek V4.1 Flash: with the veto off, a satisfied target is
+        // traversable. It is still not a goal of its own, but its frontier
+        // and its uncovered outgoing edges are goals like any other state's.
+        if (board_.forbidden(u) && vetoSatisfied)
             continue;
         if (!rg_.isExpanded(u)) {
             seed(u, cfg_.penaltyFrontier, GoalTier::Frontier);
@@ -172,7 +181,7 @@ Suggestion Suggester::suggest(const BeliefTracker &tracker)
             seed(u, cfg_.penaltyTarget, GoalTier::Target);
         EdgeId e = rg_.firstEdge(u);
         for (const Edge &ed : rg_.successors(u)) {
-            if (!board_.forbidden(ed.target) && db_.edge(e).definite == 0) {
+            if ((!board_.forbidden(ed.target) || !vetoSatisfied) && db_.edge(e).definite == 0) {
                 const GoalTier t = edgeTier(ed);
                 seed(u, 1 + penalty(t), t);  // the edge itself is the last step
             }
@@ -188,7 +197,9 @@ Suggestion Suggester::suggest(const BeliefTracker &tracker)
         if (c > cost[v])
             continue;
         reverse_.forEachPredecessor(v, [&](const ReverseIndex::Pred &p) {
-            if (board_.forbidden(p.from))
+            // DeepSeek V4.1 Flash: only the veto keeps plans out of satisfied
+            // targets; Penalise and Ignore let the distance search pass.
+            if (vetoSatisfied && board_.forbidden(p.from))
                 return;  // plans never pass through a forbidden state
             if (c + 1 < cost[p.from]) {
                 cost[p.from] = c + 1;
@@ -220,7 +231,7 @@ Suggestion Suggester::suggest(const BeliefTracker &tracker)
         double attractSum = 0.0;
         double repelSum = 0.0;
         double regionSum = 0.0;   // GLM-5.3-Flash: the static nontarget region
-        double pairAttractSum = 0.0;  // GLM-5.3-Flash: the (marking, T-list) pairs
+        double pairAttractSum = 0.0;  // GLM-5.3-Flash: the (marking, T-suffix) pairs
         double pairRepelSum = 0.0;
         std::uint32_t best = kInf;
         GoalTier bestTier = GoalTier::None;
@@ -253,19 +264,24 @@ Suggestion Suggester::suggest(const BeliefTracker &tracker)
                 attractSum += ants_->attract(e);
                 repelSum += ants_->repel(e);
                 regionSum += ants_->region(e);  // GLM-5.3-Flash: doku section 12 item 5
-                // GLM-5.3-Flash: the (marking, T-list) pair pheromone of the
+                // GLM-5.3-Flash: the (marking, T-suffix) pair pheromone of the
                 // arrival context this edge would create (doku section 16):
                 // the run's trace so far, extended by the edge's own step.
-                if (trace_ && ants_->tlistLength() > 0) {
+                if (trace_ && ants_->tsuffixLength() > 0) {
                     const TraceCascade arrival = trace_->extended(stepHashOf(net.transitions[ed.transition]));
                     pairAttractSum += ants_->pairAttract(ed.target, arrival);
                     pairRepelSum += ants_->pairRepel(ed.target, arrival);
                 }
             }
 
+            // DeepSeek V4.1 Flash: the phase policy. Veto refuses the move;
+            // Penalise counts the entry as hazard but lets the goal search
+            // continue through the state; Ignore treats it as ordinary.
             if (board_.forbidden(ed.target)) {
-                ++forbiddenTargets;
-                continue;
+                if (hazardSatisfied)
+                    ++forbiddenTargets;
+                if (vetoSatisfied)
+                    continue;
             }
             if (db_.edge(e).definite == 0) {
                 const GoalTier t = edgeTier(ed);
@@ -283,7 +299,7 @@ Suggestion Suggester::suggest(const BeliefTracker &tracker)
 
         const double edgeCount = static_cast<double>(c.edges.size());
         const double hazard = static_cast<double>(forbiddenTargets) / edgeCount;
-        if (forbiddenTargets == c.edges.size()) {
+        if (vetoSatisfied && forbiddenTargets == c.edges.size()) {
             vetoed.push_back(tr.label);
             continue;
         }
@@ -298,7 +314,7 @@ Suggestion Suggester::suggest(const BeliefTracker &tracker)
             const double scale = edgeCount * ants_->tauMax();
             // GLM-5.3-Flash: the static nontarget region rides with the
             // repellent pheromone (doku section 12 item 5), and the (marking,
-            // T-list) pair pheromone rides in the same two places (doku
+            // T-suffix) pair pheromone rides in the same two places (doku
             // section 16).
             effective += cfg_.pheromoneRepelWeight * ((repelSum + regionSum + pairRepelSum) / scale)
                          - cfg_.pheromoneAttractWeight * ((attractSum + pairAttractSum) / scale);

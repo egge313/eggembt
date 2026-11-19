@@ -344,10 +344,70 @@ inline std::uint32_t effectiveTargetHits(const NamedMarking &m, std::uint32_t gl
     return m.targetHits.value_or(globalThreshold);
 }
 
+// DeepSeek V4.1 Flash: the testing strategy a model can declare (doku section
+// 27), used by the Session as the default when the command line does not
+// override it. It is advice about HOW to test the model, not part of the
+// system: goals says whether targets/milestones or fresh coverage should win,
+// errors says how strongly a satisfied error is avoided.
+enum class GoalPriority {
+    Balanced,  // the historical weights: targets and fresh coverage close together
+    Targets,   // targets and milestones before fresh coverage
+    Coverage   // fresh behaviour before targets
+};
+
+enum class ErrorPriority {
+    Balanced,  // the historical caution
+    Seek,      // reach the error first; accept more risk on the way
+    Avoid      // keep away from satisfied errors more strongly
+};
+
+inline const char *toString(GoalPriority p)
+{
+    switch (p) {
+    case GoalPriority::Balanced: return "balanced";
+    case GoalPriority::Targets:  return "targets";
+    case GoalPriority::Coverage: return "coverage";
+    }
+    return "balanced";
+}
+
+inline const char *toString(ErrorPriority p)
+{
+    switch (p) {
+    case ErrorPriority::Balanced: return "balanced";
+    case ErrorPriority::Seek:     return "seek";
+    case ErrorPriority::Avoid:    return "avoid";
+    }
+    return "balanced";
+}
+
+inline bool parseGoalPriority(const std::string &text, GoalPriority &out)
+{
+    if (text == "balanced") { out = GoalPriority::Balanced; return true; }
+    if (text == "targets")  { out = GoalPriority::Targets;  return true; }
+    if (text == "coverage") { out = GoalPriority::Coverage; return true; }
+    return false;
+}
+
+inline bool parseErrorPriority(const std::string &text, ErrorPriority &out)
+{
+    if (text == "balanced") { out = ErrorPriority::Balanced; return true; }
+    if (text == "seek")     { out = ErrorPriority::Seek;     return true; }
+    if (text == "avoid")    { out = ErrorPriority::Avoid;    return true; }
+    return false;
+}
+
+// What the model declares; the command line overrides it.
+struct Strategy {
+    GoalPriority goals = GoalPriority::Balanced;
+    ErrorPriority errors = ErrorPriority::Balanced;
+};
+
 struct Net {
     std::string name;
     std::vector<Place> places;
     std::vector<Transition> transitions;
+    Strategy strategy;  // DeepSeek V4.1 Flash: the model's testing advice
 
     std::vector<NamedMarking> initialMarkings;  // at least one
     std::vector<NamedMarking> targetMarkings;    // legitimate end states

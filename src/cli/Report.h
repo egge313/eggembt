@@ -61,7 +61,7 @@ pn::JsonValue campaignJson(const pn::Net &net, const pn::Session &session, const
 
 // DeepSeek V4.1 Flash: the colony's pheromone, keyed readably (doku section 21):
 // per edge the source and target markings, the transition, attract, repel and
-// the static region; per (marking, T-list) pair its list and both channels.
+// the static region; per (marking, T-suffix) pair its list and both channels.
 // Edge ids are session-local, so the JSON never mentions them.
 pn::JsonValue pheromoneJson(const pn::Net &net, const pn::Session &session);
 

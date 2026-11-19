@@ -43,7 +43,7 @@ hasnt() { ! grep -q -- "$1" "$TMP/out" || fail "output unexpectedly has \"$1\"";
 
 begin version
 # DeepSeek V4.1 Flash: the version follows the git branch (doku section 20).
-run 0 "$EGGEMBT" version && has "^eggembt v0[.]0[.]1$"
+run 0 "$EGGEMBT" version && has "^eggembt v0[.]0[.]2$"
 
 # GLM-5.3-Flash: the credits, byte for byte as Egge asked for them.
 begin credits
@@ -56,8 +56,9 @@ run 0 "$EGGEMBT" credits && has "^Egge's Model-Based Tester$" \
 run 0 "$EGGEMBT" --credits && has "Designer: Esa Kettunen"
 
 begin help
-run 0 "$EGGEMBT" help && has "Commands:" && has "agent-sim"
-run 0 "$EGGEMBT" help run && has "eggembt run MODEL" && has "--simulate"
+run 0 "$EGGEMBT" help && has "Commands:" && has "agent-sim" && has "export"
+run 0 "$EGGEMBT" help run && has "eggembt run MODEL" && has "--simulate" && has "--budget"
+run 0 "$EGGEMBT" help export && has "standard PNML"
 run 0 "$EGGEMBT" run --help && has "--livelock-timeout"
 
 begin usage-errors
@@ -86,6 +87,24 @@ run 0 "$EGGEMBT" check "$PNML" && has "coffee-pnml" && has "5 transitions" && ha
 run 0 "$EGGEMBT" check "$PNML" --strict && has "coffee-pnml"
 run 0 "$EGGEMBT" run "$PNML" --simulate --quiescence 40 --no-color \
     && has "coverage complete" && has "transitions  5 of 5" && has "milestone transitions 1"
+
+begin export
+# DeepSeek V4.1 Flash: PNML export (doku section 27). Without --output the
+# document is the only thing on standard output; with it, a summary names the
+# file. The standard part re-imports; the eggembt extras travel as comments
+# and one machine-readable toolspecific block.
+run 0 "$EGGEMBT" export "$DRINKS" && has "<pnml" && has "eggembt annotations" \
+    && has "<toolspecific tool=\"eggembt\" version="
+run 0 "$EGGEMBT" export "$DRINKS" --output "$TMP/drinks.pnml" && has "PNML written to"
+grep -q '<place id="idle">' "$TMP/drinks.pnml" || fail "the exported PNML lacks a place"
+grep -q '<arc id="a1" source="idle" target="insert_coin">' "$TMP/drinks.pnml" \
+    || fail "the exported PNML has a wrong arc direction"
+grep -qF '&quot;target&quot;' "$TMP/drinks.pnml" || fail "the exported PNML lacks the target annotation"
+run 0 "$EGGEMBT" check "$TMP/drinks.pnml" --no-explore && has "drink-machine" && has "6 transitions"
+run 0 "$EGGEMBT" export "$DRINKS" --strict --output "$TMP/strict.pnml" && has "PNML written"
+run 2 "$EGGEMBT" export && has "expected exactly one model file"
+run 2 "$EGGEMBT" export "$TMP/does-not-exist.json" && has "cannot open"
+run 2 "$EGGEMBT" export "$DRINKS" --output && has "needs a value"
 
 begin check-reports-every-model-error
 cat >"$TMP/broken.json" <<'EOF'
@@ -160,22 +179,22 @@ grep -q '"deadlock_policy":"once"' "$TMP/r.json" && grep -q '"dump_on_deviation"
     && grep -q '"coverage_threshold":1' "$TMP/r.json" \
     || fail "json does not report the default guidance switches"
 
-begin tlist-and-carryover
-# GLM-5.3-Flash: the T-list layer (doku section 16) and the carry-over factor
+begin tsuffix-and-carryover
+# GLM-5.3-Flash: the T-suffix layer (doku section 16) and the carry-over factor
 # of the inherited pheromones are guidance switches too, reported the same
-# way. --tlist N turns the (marking, T-list) pairs on, --restored-pheromones
+# way. --tsuffix N turns the (marking, T-suffix) pairs on, --restored-pheromones
 # N sets how much of the earlier rounds' pheromone teaching a continued
 # campaign starts with (default 50).
-grep -q '"tlist":0' "$TMP/r.json" && grep -q '"restored_pheromones":50' "$TMP/r.json" \
-    || fail "json does not report the default tlist and carry-over switches"
-run 0 "$EGGEMBT" run "$DRINKS" --simulate --quiescence 40 --tlist 4 --restored-pheromones 25 --no-color \
+grep -q '"tsuffix":0' "$TMP/r.json" && grep -q '"restored_pheromones":50' "$TMP/r.json" \
+    || fail "json does not report the default tsuffix and carry-over switches"
+run 0 "$EGGEMBT" run "$DRINKS" --simulate --quiescence 40 --tsuffix 4 --restored-pheromones 25 --no-color \
     && has "coverage complete" && has "transitions  6 of 6"
-run 0 "$EGGEMBT" run "$DRINKS" --simulate --quiescence 40 --tlist 4 --restored-pheromones 25 --quiet \
+run 0 "$EGGEMBT" run "$DRINKS" --simulate --quiescence 40 --tsuffix 4 --restored-pheromones 25 --quiet \
     --json "$TMP/tl.json" && has "Guidance"
-grep -q '"tlist":4' "$TMP/tl.json" && grep -q '"restored_pheromones":25' "$TMP/tl.json" \
-    || fail "json does not report the tlist and carry-over switches"
-run 2 "$EGGEMBT" run "$DRINKS" --simulate --tlist 9 && has "whole number"
-run 2 "$EGGEMBT" run "$DRINKS" --simulate --tlist && has "needs a value"
+grep -q '"tsuffix":4' "$TMP/tl.json" && grep -q '"restored_pheromones":25' "$TMP/tl.json" \
+    || fail "json does not report the tsuffix and carry-over switches"
+run 2 "$EGGEMBT" run "$DRINKS" --simulate --tsuffix 9 && has "whole number"
+run 2 "$EGGEMBT" run "$DRINKS" --simulate --tsuffix && has "needs a value"
 run 2 "$EGGEMBT" run "$DRINKS" --simulate --restored-pheromones 101 && has "whole number"
 
 # GLM-5.3-Flash: the catastrophe-pheromone pricing is a guidance switch too,
@@ -187,6 +206,87 @@ grep -q '"catastrophe_time_pricing":false' "$TMP/flat.json" \
     || fail "json does not report the switched-off catastrophe pricing"
 grep -q '"catastrophe_time_pricing":true' "$TMP/r.json" \
     || fail "json does not report the default catastrophe pricing"
+
+begin strategy
+# DeepSeek V4.1 Flash: the testing strategy (doku section 27). The model
+# declares it, `check` and the campaign report name it, the JSON carries it,
+# and each half can be overridden on the command line.
+cat >"$TMP/strategy.json" <<'EOF'
+{"version":1,"name":"strategy",
+ "places":[{"id":"s0"},{"id":"s1"}],
+ "transitions":[{"id":"go","kind":"controllable","label":"go"},
+                {"id":"back","kind":"controllable","label":"back"}],
+ "arcs":[{"from":"s0","to":"go"},{"from":"go","to":"s1"},
+         {"from":"s1","to":"back"},{"from":"back","to":"s0"}],
+ "markings":{"initial":[{"name":"start","tokens":{"s0":1}}],
+             "target":[{"name":"done","tokens":{"s1":1}}]},
+ "strategy":{"goals":"coverage","errors":"avoid"}}
+EOF
+run 0 "$EGGEMBT" check "$TMP/strategy.json" --no-explore \
+    && has "strategy: goals coverage, errors avoid"
+run 0 "$EGGEMBT" run "$TMP/strategy.json" --simulate --quiescence 40 --max-runs 2 --no-color \
+    && has "strategy: goals coverage, errors avoid" && has "evaporation: per suggestion"
+run 0 "$EGGEMBT" run "$TMP/strategy.json" --simulate --quiescence 40 --max-runs 2 --quiet \
+    --json "$TMP/strategy.json.out"
+grep -qF '"strategy":{"goals":"coverage","errors":"avoid"}' "$TMP/strategy.json.out" \
+    || fail "json does not report the model's strategy"
+run 0 "$EGGEMBT" run "$TMP/strategy.json" --simulate --quiescence 40 --max-runs 2 --quiet \
+    --goal-priority targets --error-priority seek --json "$TMP/strategy-cli.json"
+grep -qF '"strategy":{"goals":"targets","errors":"seek"}' "$TMP/strategy-cli.json" \
+    || fail "the command line does not override both strategy halves"
+grep -qF '"evaporate_between_runs":false' "$TMP/strategy-cli.json" \
+    || fail "json does not report the default evaporation boundary"
+grep -qF '"time_budget_ms":0' "$TMP/strategy-cli.json" \
+    || fail "json does not report the default (unlimited) budget"
+run 2 "$EGGEMBT" run "$TMP/strategy.json" --simulate --goal-priority fast \
+    && has "balanced, targets or coverage"
+run 2 "$EGGEMBT" run "$TMP/strategy.json" --simulate --error-priority ignore \
+    && has "balanced, seek or avoid"
+
+begin satisfied-target-policy
+# DeepSeek V4.1 Flash: the Seeking -> Forbidden veto is optional (doku
+# section 28). The default stays veto; the report and JSON name the policy.
+run 0 "$EGGEMBT" run "$DRINKS" --simulate --quiescence 40 --no-color \
+    && has "satisfied targets: veto"
+run 0 "$EGGEMBT" run "$DRINKS" --simulate --quiescence 40 --satisfied-target-policy penalise --no-color \
+    && has "satisfied targets: penalise"
+run 0 "$EGGEMBT" run "$DRINKS" --simulate --quiescence 40 --satisfied-target-policy ignore --quiet \
+    --json "$TMP/satisfied.json"
+grep -qF '"satisfied_target_policy":"ignore"' "$TMP/satisfied.json" \
+    || fail "json does not report the satisfied-target policy"
+run 2 "$EGGEMBT" run "$DRINKS" --simulate --satisfied-target-policy maybe \
+    && has "veto, penalise or ignore"
+
+begin budget
+# DeepSeek V4.1 Flash: the wall-clock budget (doku section 27). A tiny budget
+# stops the campaign at a normal run boundary; the exit code stays 0 and the
+# report says why. A generous one changes nothing. Bad durations are usage
+# errors.
+run 0 "$EGGEMBT" run "$DRINKS" --simulate --quiescence 40 --max-runs 50 --budget 1ms --no-color \
+    && has "time budget reached"
+run 0 "$EGGEMBT" run "$DRINKS" --simulate --quiescence 40 --max-runs 50 --budget 1ms --quiet \
+    --json "$TMP/budget.json"
+grep -qF '"stop_reason":"time budget reached"' "$TMP/budget.json" \
+    || fail "json does not report the budget stop"
+grep -qF '"time_budget_ms":1' "$TMP/budget.json" || fail "json does not report the budget"
+grep -qF '"budget_reached":' "$TMP/budget.json" || fail "json lacks per-run budget_reached"
+run 0 "$EGGEMBT" run "$DRINKS" --simulate --quiescence 40 --max-runs 2 --budget 5s --no-color \
+    && has "coverage complete" && hasnt "time budget reached"
+run 0 "$EGGEMBT" run "$DRINKS" --simulate --quiescence 40 --max-runs 1 --budget 1500ms --quiet
+run 2 "$EGGEMBT" run "$DRINKS" --simulate --budget 0 && has "positive duration"
+run 2 "$EGGEMBT" run "$DRINKS" --simulate --budget banana && has "positive duration"
+run 2 "$EGGEMBT" run "$DRINKS" --simulate --budget 2d && has "positive duration"
+
+begin evaporation-between-runs
+# DeepSeek V4.1 Flash: aging at run boundaries instead of every suggestion
+# (doku section 27). The ants still walk; the console and the JSON name the
+# boundary. The measured effect is pinned in tst_pheromone.
+run 0 "$EGGEMBT" run "$DRINKS" --simulate --quiescence 40 --evaporate-between-runs --no-color \
+    && has "evaporation: between runs (--evaporate-between-runs)" && has "coverage complete"
+run 0 "$EGGEMBT" run "$DRINKS" --simulate --quiescence 40 --evaporate-between-runs --quiet \
+    --json "$TMP/evaporation.json"
+grep -qF '"evaporate_between_runs":true' "$TMP/evaporation.json" \
+    || fail "json does not report the run-boundary aging"
 
 begin good-target
 # GLM-5.3-Flash: an intentional target marking is a good target state: a normal
@@ -517,14 +617,14 @@ begin inspection
 # DeepSeek V4.1 Flash: post-campaign inspection (doku section 21). The views read
 # the recording -- the traces and the coverage from the log's own steps, the
 # pheromone rebuilt from it -- so inspecting never changes the campaign.
-run 0 "$EGGEMBT" run "$ATM" --simulate --max-runs 4 --tlist 4 --log "$TMP/inspect.log" \
+run 0 "$EGGEMBT" run "$ATM" --simulate --max-runs 4 --tsuffix 4 --log "$TMP/inspect.log" \
     --json "$TMP/inspect.json" --coverage-elements --dump-pheromone "$TMP/inspect-pheromone.json" \
     && has "Pheromone written to"
 grep -q '"states":\[' "$TMP/inspect.json" || fail "--coverage-elements lacks the states"
 grep -q '"covered":true' "$TMP/inspect.json" || fail "--coverage-elements lacks the covered flag"
 grep -q '"edges":\[' "$TMP/inspect.json" || fail "--coverage-elements lacks the edges"
 grep -q '"transition":"' "$TMP/inspect.json" || fail "--coverage-elements lacks the transitions"
-grep -q '"tlist":[1-9]' "$TMP/inspect-pheromone.json" || fail "the pheromone dump lacks the T-list length"
+grep -q '"tsuffix":[1-9]' "$TMP/inspect-pheromone.json" || fail "the pheromone dump lacks the T-suffix length"
 grep -q '"pairs":\[{' "$TMP/inspect-pheromone.json" || fail "the pheromone dump lacks the pair store"
 grep -q '"attract":' "$TMP/inspect-pheromone.json" || fail "the pheromone dump lacks the channels"
 grep -q 'GLM-5' "$TMP/inspect-pheromone.json" && fail "the pheromone dump leaks the signature"
@@ -540,9 +640,9 @@ run 0 "$EGGEMBT" report "$ATM" --log "$TMP/inspect.log" --trace 99 && has "no ru
 run 2 "$EGGEMBT" report "$ATM" --log "$TMP/inspect.log" --trace 0 && has "whole number"
 run 2 "$EGGEMBT" report "$ATM" --log "$TMP/inspect.log" --trace banana && has "whole number"
 # The same log drawn and dumped again: the graph coloured by the coverage and
-# the pair store rebuilt at the campaign's --tlist.
+# the pair store rebuilt at the campaign's --tsuffix.
 run 0 "$EGGEMBT" report "$ATM" --log "$TMP/inspect.log" --dot "$TMP/inspect.dot" \
-    --coverage-elements --tlist 4 --dump-pheromone "$TMP/inspect-pheromone2.json" \
+    --coverage-elements --tsuffix 4 --dump-pheromone "$TMP/inspect-pheromone2.json" \
     --json "$TMP/inspect-report.json" \
     && has "Graph written" && has "Pheromone written"
 grep -q 'penwidth=3' "$TMP/inspect.dot" || fail "the coverage drawing has no threshold-reached element"

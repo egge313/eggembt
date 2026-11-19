@@ -13,14 +13,14 @@ AntColony::AntColony(ReachabilityGraph &rg, const CoverageDb &db, AntConfig conf
 
 std::vector<AntColony::PairEntry> AntColony::pairEntries() const
 {
-    // DeepSeek V4.1 Flash: a read-only view of the (marking, T-list) store for the
+    // DeepSeek V4.1 Flash: a read-only view of the (marking, T-suffix) store for the
     // pheromone dump. Sorted, because the hash map's order is not a contract.
     std::vector<PairEntry> rows;
     rows.reserve(pairs_.size());
     for (const auto &kv : pairs_) {
         PairEntry e;
         e.state = kv.first.state;
-        e.tlist = kv.first.tlist;
+        e.tsuffix = kv.first.tsuffix;
         e.attract = kv.second.attract;
         e.repel = kv.second.repel;
         rows.push_back(e);
@@ -28,7 +28,7 @@ std::vector<AntColony::PairEntry> AntColony::pairEntries() const
     std::sort(rows.begin(), rows.end(), [](const PairEntry &a, const PairEntry &b) {
         if (a.state != b.state)
             return a.state < b.state;
-        return a.tlist < b.tlist;
+        return a.tsuffix < b.tsuffix;
     });
     return rows;
 }
@@ -149,13 +149,13 @@ void AntColony::depositRepel(StateId at, double amount)
 }
 
 // GLM-5.3-Flash: the pair store (doku section 16). A deposit lands flat under
-// the one (marking, T-list) pair -- the marking `at`, arrived at with the
-// T-list `arrival` -- capped at tauMax like every deposit. No back-propagation
+// the one (marking, T-suffix) pair -- the marking `at`, arrived at with the
+// T-suffix `arrival` -- capped at tauMax like every deposit. No back-propagation
 // here: the edge channels still do the propagating, the pairs only refine
 // what they already say.
 void AntColony::depositPairAttract(StateId at, const TraceCascade &arrival, double amount)
 {
-    if (cfg_.tlistLength == 0)
+    if (cfg_.tsuffixLength == 0)
         return;
     PairPheromone &p = pairs_[PairKey{at, arrival.elements()}];
     p.attract = static_cast<float>(std::min(cfg_.tauMax, static_cast<double>(p.attract) + amount));
@@ -163,7 +163,7 @@ void AntColony::depositPairAttract(StateId at, const TraceCascade &arrival, doub
 
 void AntColony::depositPairRepel(StateId at, const TraceCascade &arrival, double amount)
 {
-    if (cfg_.tlistLength == 0)
+    if (cfg_.tsuffixLength == 0)
         return;
     PairPheromone &p = pairs_[PairKey{at, arrival.elements()}];
     p.repel = static_cast<float>(std::min(cfg_.tauMax, static_cast<double>(p.repel) + amount));
@@ -171,7 +171,7 @@ void AntColony::depositPairRepel(StateId at, const TraceCascade &arrival, double
 
 double AntColony::pairAttract(StateId at, const TraceCascade &arrival) const
 {
-    if (cfg_.tlistLength == 0)
+    if (cfg_.tsuffixLength == 0)
         return 0.0;
     const auto it = pairs_.find(PairKey{at, arrival.elements()});
     return it == pairs_.end() ? 0.0 : static_cast<double>(it->second.attract);
@@ -179,7 +179,7 @@ double AntColony::pairAttract(StateId at, const TraceCascade &arrival) const
 
 double AntColony::pairRepel(StateId at, const TraceCascade &arrival) const
 {
-    if (cfg_.tlistLength == 0)
+    if (cfg_.tsuffixLength == 0)
         return 0.0;
     const auto it = pairs_.find(PairKey{at, arrival.elements()});
     return it == pairs_.end() ? 0.0 : static_cast<double>(it->second.repel);
@@ -198,7 +198,7 @@ std::uint32_t AntColony::edgeStepHash(EdgeId e) const
 // the power, the repulsion joins the exponent of the decay.
 double AntColony::inputWeight(EdgeId e, const TraceCascade &trace) const
 {
-    if (cfg_.tlistLength == 0)
+    if (cfg_.tsuffixLength == 0)
         return inputWeight(e);
     const StateId target = rg_.edge(e).target;
     const TraceCascade arrival = trace.extended(edgeStepHash(e));
@@ -209,7 +209,7 @@ double AntColony::weight(EdgeId e, double extraAttract, double extraRepel) const
 {
     const double novelty = db_.isSaturatedEdge(e) ? 0.01 : 1.0 / (1.0 + static_cast<double>(db_.edge(e).definite));
     // GLM-5.3-Flash: the static nontarget region rides with the learned repel
-    // (doku section 12 item 5); `extra` carries the (marking, T-list) pair
+    // (doku section 12 item 5); `extra` carries the (marking, T-suffix) pair
     // layer (doku section 16), both channels in the same places.
     return std::pow(attract(e) + extraAttract + 0.1, cfg_.alpha) * std::pow(novelty, cfg_.beta)
            * std::exp(-cfg_.lambda * (repel(e) + region(e) + extraRepel));
@@ -255,10 +255,10 @@ EdgeId AntColony::choose(StateId at, const TraceCascade &trace)
             // layer (doku section 16) -- the SUT's own moves have no arrival
             // context an input trace could describe.
             w = cfg_.environmentWeight ? cfg_.environmentWeight(e) : 1.0;
-        } else if (cfg_.tlistLength == 0) {
+        } else if (cfg_.tsuffixLength == 0) {
             w = inputWeight(e);
         } else {
-            // GLM-5.3-Flash: the (marking, T-list) pair consult (doku
+            // GLM-5.3-Flash: the (marking, T-suffix) pair consult (doku
             // section 16): the edge is weighed under the pair of the marking
             // it leads to, arrived at with the ant's trace extended by the
             // edge's own step.
@@ -325,12 +325,12 @@ bool AntColony::arrive(StateId s)
 void AntColony::runAnt(StateId start)
 {
     ++stats_.ants;
-    // GLM-5.3-Flash: the ant carries its own T-list cascade (doku section
+    // GLM-5.3-Flash: the ant carries its own T-suffix cascade (doku section
     // 16): all kTraceSeed at its start, one step pushed per edge it walks --
     // the ant's own arrival history, exactly the trace from which it arrived
     // wherever it stands.
     TraceCascade trace;
-    trace.setLength(cfg_.tlistLength);
+    trace.setLength(cfg_.tsuffixLength);
     StateId cur = start;
     for (std::size_t step = 0; step < cfg_.maxSteps; ++step) {
         if (!rg_.isExpanded(cur)) {
@@ -351,7 +351,7 @@ void AntColony::runAnt(StateId start)
     ++stats_.exhausted;
 }
 
-void AntColony::iterate(const std::vector<StateId> &starts)
+void AntColony::iterate(const std::vector<StateId> &starts, bool evaporate)
 {
     ++stats_.iterations;
 
@@ -370,6 +370,14 @@ void AntColony::iterate(const std::vector<StateId> &starts)
         }
     }
 
+    // DeepSeek V4.1 Flash: a caller that evaporates between its own runs
+    // asks the ants to walk without aging; age() runs once at its boundary.
+    if (evaporate)
+        age();
+}
+
+void AntColony::age()
+{
     // Evaporation, then saturated edges lose their attraction.
     ensure();
     const auto keepAttract = static_cast<float>(1.0 - cfg_.evaporationAttract);

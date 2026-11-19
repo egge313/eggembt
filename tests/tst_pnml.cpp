@@ -5,7 +5,10 @@
 // example to prove a PNML model is usable end to end.
 #include "io/PnmlLoader.h"
 
+#include "engine/Json.h"       // DeepSeek V4.1 Flash: the export's annotations are JSON
 #include "engine/Session.h"
+#include "io/PnmlWriter.h"     // DeepSeek V4.1 Flash
+#include "model/NetBuilder.h"  // DeepSeek V4.1 Flash
 #include "FakeSut.h"
 #include "MiniTest.h"
 
@@ -13,6 +16,7 @@
 #include <string>
 
 using pn::JsonNetLoader;
+using pn::JsonValue;  // DeepSeek V4.1 Flash: export annotations
 using pn::LoadIssue;
 using pn::LoadResult;
 using pn::PnmlLoader;
@@ -27,6 +31,45 @@ bool hasIssue(const LoadResult &r, LoadIssue::Severity sev, const std::string &p
             return true;
     }
     return false;
+}
+
+// DeepSeek V4.1 Flash: XML entities decoded, the reverse of the writer's
+// escaping, so an annotation's <text> can be parsed as JSON.
+bool xmlUnescape(const std::string &raw, std::string &out)
+{
+    out.clear();
+    for (std::size_t i = 0; i < raw.size(); ++i) {
+        if (raw[i] != '&') {
+            out += raw[i];
+            continue;
+        }
+        const std::size_t end = raw.find(';', i);
+        if (end == std::string::npos)
+            return false;
+        const std::string entity = raw.substr(i + 1, end - i - 1);
+        if (entity == "lt")       out += '<';
+        else if (entity == "gt")  out += '>';
+        else if (entity == "amp") out += '&';
+        else if (entity == "quot") out += '"';
+        else if (entity == "apos") out += '\'';
+        else return false;
+        i = end;
+    }
+    return true;
+}
+
+// The machine-readable annotation block (the last toolspecific with a <text>).
+bool annotationJson(const std::string &doc, JsonValue &out)
+{
+    const std::size_t at = doc.find("<toolspecific tool=\"eggembt\" version=");
+    if (at == std::string::npos)
+        return false;
+    const std::size_t open = doc.find("<text>", at);
+    const std::size_t close = open == std::string::npos ? std::string::npos : doc.find("</text>", open);
+    if (open == std::string::npos || close == std::string::npos)
+        return false;
+    std::string json;
+    return xmlUnescape(doc.substr(open + 6, close - open - 6), json) && JsonValue::parse(json, out);
 }
 
 // A small valid net; individual tests replace one section to break it.
@@ -407,6 +450,151 @@ struct TstPnml {
         T_VERIFY(rep.summary.transitionsCovered > 0);
         T_VERIFY(session.coverage().transitionHits(*r.net->findTransition("serve")) > 0);
     }
+
+    // DeepSeek V4.1 Flash: the export (doku section 27). The standard part
+    // must re-import as the same net; the eggembt-only part is annotations.
+    void exportRoundTrip()
+    {
+        pn::NetBuilder b("coffee & tea");
+        const pn::PlaceIndex idle = b.place("idle");
+        const pn::PlaceIndex busy = b.place("busy", 3);
+        const pn::PlaceIndex lamp = b.place("lamp");
+        const pn::TransitionIndex press = b.transition("press", pn::TransitionKind::Controllable, "coin<insert>");
+        const pn::TransitionIndex serve = b.transition("serve", pn::TransitionKind::Observable, "drink.served");
+        const pn::TransitionIndex tick = b.transition("tick", pn::TransitionKind::Internal);
+        b.input(idle, press).output(press, busy).output(press, lamp);
+        b.input(busy, serve, 2).input(lamp, serve).output(serve, idle);
+        b.inhibitor(lamp, tick).input(idle, tick).output(tick, idle);
+        b.milestone(serve, 2);
+        b.initial("start", {{idle, 1}, {lamp, 1}});
+        b.initial("late", {{busy, 2}});
+        b.targetMarking("served", {{idle, 1}});
+        b.errorMarking("stuck", {{busy, 1}}, pn::MatchMode::Exact,
+                       pn::ErrorOptions{pn::TargetPolicy::Once, 1, pn::DumpMode::Crash, 2});
+        pn::Net net = b.build();
+        net.strategy.goals = pn::GoalPriority::Coverage;
+        net.strategy.errors = pn::ErrorPriority::Avoid;
+
+        const std::string doc = pn::toPnml(net);
+        T_VERIFY(doc.rfind("<?xml", 0) == 0);
+        T_VERIFY(doc.find("<pnml") != std::string::npos);
+        T_VERIFY(doc.find("target &quot;served&quot;") != std::string::npos);
+        T_VERIFY(doc.find("bound 3") != std::string::npos);
+        T_VERIFY(doc.find("PNML has one initial marking") != std::string::npos);
+
+        const LoadResult r = PnmlLoader::loadText(doc, "export.pnml");
+        T_VERIFY2(r.ok(), minitest::cstr(r.report()));
+        T_COMPARE(r.net->name, std::string("coffee & tea"));  // escaping survives
+        T_COMPARE(r.net->places.size(), net.places.size());
+        T_COMPARE(r.net->transitions.size(), net.transitions.size());
+
+        const auto press2 = r.net->findTransition("press");
+        T_VERIFY(press2.has_value());
+        T_COMPARE(r.net->transitions[*press2].kind, pn::TransitionKind::Controllable);
+        T_COMPARE(r.net->transitions[*press2].label, std::string("coin<insert>"));
+        const auto serve2 = r.net->findTransition("serve");
+        T_VERIFY(serve2.has_value());
+        T_COMPARE(r.net->transitions[*serve2].kind, pn::TransitionKind::Observable);
+        T_VERIFY(r.net->transitions[*serve2].milestone);
+        T_COMPARE(r.net->transitions[*serve2].milestoneRank, pn::TransitionIndex(2));
+        // Weight 2 on busy -> serve survives.
+        bool weighted = false;
+        for (const pn::WeightedArc &a : r.net->transitions[*serve2].pre)
+            if (a.place == *r.net->findPlace("busy") && a.weight == 2)
+                weighted = true;
+        T_VERIFY(weighted);
+        const auto tick2 = r.net->findTransition("tick");
+        T_VERIFY(tick2.has_value());
+        T_COMPARE(r.net->transitions[*tick2].kind, pn::TransitionKind::Internal);
+        T_COMPARE(r.net->transitions[*tick2].label, std::string());
+        T_VERIFY(!r.net->transitions[*tick2].traced);
+        T_VERIFY(r.net->transitions[*tick2].inhibit.size() == 1);
+        T_COMPARE(r.net->transitions[*tick2].inhibit[0].place, *r.net->findPlace("lamp"));
+
+        // Standard PNML carries exactly the FIRST initial marking ...
+        T_COMPARE(r.net->initialMarkings.size(), std::size_t(1));
+        T_COMPARE(r.net->initialMarkings[0].tokens.size(), std::size_t(2));
+        // ... and no bounds or targets, which are annotations only.
+        const auto busy2 = r.net->findPlace("busy");
+        T_VERIFY(busy2.has_value());
+        T_VERIFY(!r.net->places[*busy2].bound.has_value());
+        T_VERIFY(r.net->targetMarkings.empty());
+        T_VERIFY(r.net->errorMarkings.empty());
+
+        // The machine-readable block keeps everything the round trip lost.
+        JsonValue ann;
+        T_VERIFY(annotationJson(doc, ann));
+        T_COMPARE(ann.find("name")->asString(), std::string("coffee & tea"));
+        const JsonValue *strategy = ann.find("strategy");
+        T_VERIFY(strategy != nullptr);
+        T_COMPARE(strategy->find("goals")->asString(), std::string("coverage"));
+        T_COMPARE(strategy->find("errors")->asString(), std::string("avoid"));
+        T_COMPARE(ann.find("initial")->items().size(), std::size_t(2));
+        T_COMPARE(ann.find("target")->items().size(), std::size_t(1));
+        T_COMPARE(ann.find("error")->items().size(), std::size_t(1));
+        const JsonValue *error = &ann.find("error")->items()[0];
+        T_COMPARE(error->find("name")->asString(), std::string("stuck"));
+        T_COMPARE(error->find("policy")->asString(), std::string("once"));
+        T_COMPARE(error->find("crash_dump")->asString(), std::string("crash"));
+        T_COMPARE(error->find("max_dumps")->asNumber(), 2.0);
+        const JsonValue *places = ann.find("places");
+        T_VERIFY(places != nullptr);
+        T_COMPARE(places->items().size(), std::size_t(1));
+        T_COMPARE(places->items()[0].find("bound")->asNumber(), 3.0);
+    }
+
+    // DeepSeek V4.1 Flash: ids that are not XML names cannot be PNML ids. The
+    // replacement keeps the document readable; the original stays in <name>
+    // and in the annotations.
+    void exportUnsafeIdsStillLoad()
+    {
+        pn::NetBuilder b("bad & <net>");
+        const pn::PlaceIndex p = b.place("1 bad place");
+        const pn::TransitionIndex t = b.transition("t<x", pn::TransitionKind::Controllable, "do&it");
+        b.input(p, t).output(t, p);
+        b.initial("go", {{p, 1}});
+        const pn::Net net = b.build();
+
+        const std::string doc = pn::toPnml(net);
+        T_VERIFY(doc.find("id=\"p0\"") != std::string::npos);
+        T_VERIFY(doc.find("id=\"t0\"") != std::string::npos);
+        T_VERIFY(doc.find("1 bad place") != std::string::npos);
+        T_VERIFY(doc.find("t&lt;x") != std::string::npos);
+
+        const LoadResult r = PnmlLoader::loadText(doc, "unsafe.pnml");
+        T_VERIFY2(r.ok(), minitest::cstr(r.report()));
+        T_COMPARE(r.net->name, std::string("bad & <net>"));
+        T_COMPARE(r.net->transitions[0].label, std::string("do&it"));
+        T_COMPARE(r.net->places[0].id, std::string("p0"));
+    }
+
+    // DeepSeek V4.1 Flash: the shipped PNML example survives an export and a
+    // re-import structurally (ids that are not XML names may change).
+    void exportShippedExampleRoundTrips()
+    {
+        const LoadResult r = PnmlLoader::loadFile(std::string(EXAMPLES_DIR "/coffee-pnml.pnml"));
+        T_VERIFY2(r.ok(), minitest::cstr(r.report()));
+        const std::string doc = pn::toPnml(*r.net);
+        const LoadResult again = PnmlLoader::loadText(doc, "again.pnml");
+        T_VERIFY2(again.ok(), minitest::cstr(again.report()));
+
+        T_COMPARE(again.net->places.size(), r.net->places.size());
+        T_COMPARE(again.net->transitions.size(), r.net->transitions.size());
+        for (std::size_t i = 0; i < r.net->transitions.size(); ++i) {
+            const pn::Transition &a = r.net->transitions[i];
+            const pn::Transition &b2 = again.net->transitions[i];
+            T_COMPARE(b2.kind, a.kind);
+            T_COMPARE(b2.label, a.label);
+            T_COMPARE(b2.milestone, a.milestone);
+            if (a.milestone)
+                T_COMPARE(b2.milestoneRank, a.milestoneRank);
+            T_COMPARE(b2.pre.size(), a.pre.size());
+            T_COMPARE(b2.post.size(), a.post.size());
+            T_COMPARE(b2.inhibit.size(), a.inhibit.size());
+        }
+        T_COMPARE(again.net->initialMarkings.size(), r.net->initialMarkings.size());
+        T_COMPARE(again.net->initialMarkings[0].tokens.size(), r.net->initialMarkings[0].tokens.size());
+    }
 };
 
 int main()
@@ -432,5 +620,9 @@ int main()
     T_RUN(TstPnml, loadsShippedExample);
     T_RUN(TstPnml, missingFile);
     T_RUN(TstPnml, pnmlModelRunsInASession);
+    // DeepSeek V4.1 Flash: PNML export (doku section 27).
+    T_RUN(TstPnml, exportRoundTrip);
+    T_RUN(TstPnml, exportUnsafeIdsStillLoad);
+    T_RUN(TstPnml, exportShippedExampleRoundTrips);
     return T_SUMMARY();
 }

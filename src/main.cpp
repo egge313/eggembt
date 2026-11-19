@@ -29,6 +29,7 @@ int main(int argc, char **argv)
                 if (target == "run") return cli::cmdRun(args, std::cout, std::cerr);
                 if (target == "report") return cli::cmdReport(args, std::cout, std::cerr);
                 if (target == "compare") return cli::cmdCompare(args, std::cout, std::cerr);
+                if (target == "export") return cli::cmdExport(args, std::cout, std::cerr);  // DeepSeek V4.1 Flash
                 if (target == "agent-sim") return cli::cmdAgentSim(args, std::cout, std::cerr);
             }
             cli::printUsage(std::cout);
@@ -56,6 +57,7 @@ int main(int argc, char **argv)
         if (command == "run") return cli::cmdRun(args, std::cout, std::cerr);
         if (command == "report") return cli::cmdReport(args, std::cout, std::cerr);
         if (command == "compare") return cli::cmdCompare(args, std::cout, std::cerr);
+        if (command == "export") return cli::cmdExport(args, std::cout, std::cerr);  // DeepSeek V4.1 Flash
         if (command == "agent-sim") return cli::cmdAgentSim(args, std::cout, std::cerr);
     } catch (const std::exception &e) {
         std::cerr << "eggembt: internal error: " << e.what() << "\n";

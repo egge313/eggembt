@@ -117,6 +117,11 @@ what is worth noting:
   `{"class": "rare", "p": 0.3, "attempts": 7, "crash_dump": "snapshot"}`.
   A predicted crash is a *target* the campaign tries to reproduce until the
   experiment behind it is certain it is deterministic (§6.11).
+- **The testing strategy** — a root-level `"strategy"` object says what the
+  campaign should weigh more, without changing the SUT: `{"goals":
+  "balanced" | "targets" | "coverage", "errors": "balanced" | "seek" |
+  "avoid"}`. It is advice, not part of the system; the command line can
+  override each half (§8.5).
 - **Command hooks** — a transition can carry a shell command that runs when
   its step is certainly fired: `"command": "collect.sh"` (a synchronous
   command) or an object
@@ -323,7 +328,7 @@ Four words the rest of this manual leans on.
 one transition fired: an input sent, an output observed, an internal step the
 model took. The trace is the run's story. It is what gets recorded in the run
 log, what a **backtrace** replays backwards
-(`start > coin.insert > button.coffee > coffee.served`), and what the T-lists
+(`start > coin.insert > button.coffee > coffee.served`), and what the T-suffixes
 of §7 hash.
 
 **Run.** A **run** is one encounter with the SUT: start in an initial
@@ -352,7 +357,7 @@ step**, credited exactly, and named in backtraces. Sometimes several edges
 explain the same event: an **ambiguous stretch** — the run certainly went on,
 but the exact edge is not certain; coverage is credited transition-wise, and
 backtraces render the stretch as `...`. Milestones, error transitions and the
-T-lists (§7.1) act on *definitely credited* steps.
+T-suffixes (§7.1) act on *definitely credited* steps.
 
 ---
 
@@ -426,7 +431,10 @@ whole campaign, so the same error is not collected twenty times.
 
 An important shift of view: an error marking is a *declared* error — the
 campaign seeks such situations on purpose (the ants steer toward them) until
-they are covered, because finding them is the point of testing.
+they are covered, because finding them is the point of testing. Once its
+policy says it is covered, it becomes a **satisfied target** and its states
+are forbidden; by default the suggester then refuses to enter them again
+(§8.5 shows the `--satisfied-target-policy` relaxation).
 
 ### 6.3 Error transitions
 
@@ -515,7 +523,7 @@ is the wall clock: reaching a deeper error state costs more campaign time,
 so its way in deserves harder repel. `--flat-catastrophe` keeps the deposit
 at 3.0 always, and a way in that crosses an `"unpredictable"` (human)
 transition is flat too — a human's reaction time says nothing reproducible
-about the SUT. The same lessons also land in the (marking, T-list) pairs of
+about the SUT. The same lessons also land in the (marking, T-suffix) pairs of
 §7.1 and are rebuilt, toned down, from the run log (§7.3). One exception
 exists since the crash predictions: a crash that is still being *reproduced*
 teaches the opposite while it seeks — the way in is marked attractive,
@@ -639,7 +647,7 @@ each when both exist), then draws from that pool in proportion to weight.
     alpha = beta = lambda = 1            (the defaults)
 
 Environment moves use the observed take rates in place of the formula, and
-the (marking, T-list) layer (§7.2) adds its pair channels to `attract` and
+the (marking, T-suffix) layer (§7.2) adds its pair channels to `attract` and
 `repel` for input edges. A round may expand at most 200 new states.
 
 What the ants find changes the landscape the next real run is steered by:
@@ -663,18 +671,22 @@ input the next run sends; `--seed N` seeds the run's random tie-breaks
 `--ant-seed N` seeds the colony's walks. `--no-ants` switches the colony off,
 leaving coverage-only guidance.
 
-### 7.2 The T-list — (marking, T-list) pairs as a finer pheromone basis
+### 7.2 The T-suffix — (marking, T-suffix) pairs as a finer pheromone basis
 
 Pheromones keyed by *marking* alone have a blind spot: all arrivals at one
 situation are lumped together. A catastrophe suffered *via one route*
-condemns that marking for *every* route. The T-list is the refinement —
+condemns that marking for *every* route. The T-suffix is the refinement —
 Egge's text, verbatim:
 
 > Yet another feature, which can be optionally on or off: To each marking, add a list of truncated traces, each of which is called a T-list, from which we arrived to the marking. The length of the list is N. By default, N is 4. The Nth element of the T-list is a mini-hash created from the current trace. The (marking, T-list) pairs are now the basis for pheromone generation instead of mere markings.
 
+The quote keeps the word of its time; the feature is called **T-suffix**
+since v0.0.2, and this manual uses that name (`doku.md` §27 records the
+rename).
+
 In plain words: every marking now remembers *how you got there* — not the
 whole trace, but a small list of fingerprints of its recent steps. The
-**T-list** of an arrival is that list; a **(marking, T-list) pair** is "this
+**T-suffix** of an arrival is that list; a **(marking, T-suffix) pair** is "this
 situation, arrived at this way". Pheromones can then be kept per pair, so
 learning becomes **route-sensitive**.
 
@@ -693,8 +705,8 @@ multiply with 0xC2B2AE35, xor-shift 16 — a Murmur-style final avalanche,
 written out so every platform and replay produces the same values. So
 H_1(m) = mix(kTraceSeed, s_m) depends only on the last step, H_2(m) on the
 last two, …, and H_N(m) is the mini-hash created from the current trace,
-truncated to its last N steps — the Nth element of the T-list. Two arrivals
-at a marking share the first j elements of their T-lists exactly when their
+truncated to its last N steps — the Nth element of the T-suffix. Two arrivals
+at a marking share the first j elements of their T-suffixes exactly when their
 traces' last j steps agree. The recurrence lets one rolling pass per
 arriving step maintain the whole list (`h_[i]` holds element i+1):
 
@@ -724,8 +736,8 @@ for B — so the two arrivals have *different* pairs even though the marking
 is the same. Two arrivals whose traces end in the same steps share exactly
 those elements of their lists.
 
-What it changes mechanically: with the layer on (`--tlist N`, 0..8; 0 = off,
-the default — Egge's "By default, N is 4" is `--tlist 4`), the session's
+What it changes mechanically: with the layer on (`--tsuffix N`, 0..8; 0 = off,
+the default — Egge's "By default, N is 4" is `--tsuffix 4`), the session's
 milestone and catastrophe deposits also land in a per-pair store under the
 arrival pair — flat, capped at `tauMax`, the same amounts as the edge
 deposits, evaporating with them, pruned when both channels fall to nothing.
@@ -758,7 +770,7 @@ Three claims, each already true of a part of the tool, now true together:
   averaged away.
 
 - **Toned down.** Every deposit the rebuild lays — milestones,
-  catastrophes, and the (marking, T-list) pairs alike — is scaled by
+  catastrophes, and the (marking, T-suffix) pairs alike — is scaled by
   `--restored-pheromones N` (0..100, default **50**). The reasoning:
   inherited knowledge is second-hand and possibly stale — the SUT may have
   changed since the earlier round — so a fresh round should weigh what it
@@ -775,6 +787,46 @@ Example with the pinned numbers: a rank-2 milestone deposits 1.5 × 2 = 3.0
 live; rebuilt into a continued campaign at the default 50 % it deposits
 1.5. Two restored runs of the same milestone merge to 1.5 + 1.5 = 3.0 —
 merged as before, each toned down.
+
+### 7.4 Evaporation — per suggestion or at the run boundary
+
+The pheromone is not permanent. Every suggestion the tool makes ages the
+colony once: the attract channel loses 10 %, the repel channel 2 %, and an
+edge that is already saturated loses its attract outright. That is the
+historical setting and it stays the default.
+
+The repel channel's 2 % is the one that matters for a lesson learned the
+hard way: a catastrophe. Its half-life is about 34 suggestions. In a short
+run that is plenty — the next run starts with the lesson still loud. In a
+long run it is not: a run that makes 200 suggestions keeps only
+0.98^200 ≈ 1.8 % of what the beginning of the run taught. The benchmark in
+`tst_pheromone` (§12.1 repeats its numbers) makes this concrete: on the
+1000-state diamond, six runs of 200 events crash the SUT **three** times and
+cover 586 edges when the colony ages per suggestion; with
+`--evaporate-between-runs` they crash **twice**, keep four runs productive
+and cover **777** edges.
+
+`--evaporate-between-runs` changes *when* the aging happens, not whether the
+ants walk: at every suggestion the ants still walk and still inspect the
+pheromone, but neither channel ages. Once a run has finished — its final
+settle included, so every deposit has landed — the colony ages exactly
+once. A run, however long, then costs the lesson one 2 % step instead of
+one per suggestion.
+
+Which one to use? The per-suggestion aging is right when the campaign is
+made of many short runs: a lesson from run *k* reaches run *k+1* almost
+undiminished anyway, and the quick decay keeps the colony responsive to a
+changing SUT. The boundary aging is right when runs are long and the lesson
+must survive from one run to the next — which is exactly the case the
+benchmark measures. The automatic test
+(`agingCanWaitForTheRunBoundary`, `tst_ants`) pins the mechanics: 200
+walking iterations without aging leave a deposit at exactly its value, one
+`age()` leaves exactly 98 % of it, and 200 per-suggestion agings leave
+1.8 % — the arithmetic behind the difference above.
+
+The flag is a campaign switch, not a model property, and `report` is not
+affected: a rebuilt campaign lays the recorded deposits and does not
+simulate the aging history of the live one (it never did).
 
 ---
 
@@ -795,6 +847,7 @@ Commands:
   run MODEL        test a system (an agent, or the built-in simulator) against the model
   report MODEL     replay a run log and show the coverage reached so far
   compare MODEL    mutual overlap of two run logs' coverage (Jaccard, CSV for plots)
+  export MODEL     write the model as standard PNML, with the eggembt extras as comments
   agent-sim MODEL  serve a simulated SUT over standard input/output (an agent for 'run')
   version          print the version
   credits          print the credits
@@ -852,6 +905,7 @@ Campaign shape:
 | `--seed N` | 0 | seed for random tie-breaks; 0 = deterministic order; same seed reproduces a campaign |
 | `--no-analyze` | off | skip the static analysis of the model |
 | `--max-states N` | 1000000 | limit of the reachability graph (§3.3) |
+| `--budget DURATION` | 0 (no limit) | wall-clock budget for the whole campaign: a bare number is seconds, or use `ms`, `s`, `m`, `h` (`500ms`, `90s`, `10m`, `2h`); the campaign stops there as a normal stop (§8.5) |
 | `--sync-events` | off | hold the SUT at the model's `"sync"` events until the tracker has handled and acknowledged them (§2.3); needs a plug-in that can acknowledge |
 
 Timing:
@@ -872,6 +926,7 @@ Policies and post-mortems:
 |--------|---------|---------|
 | `--deadlock-policy P` | once | `until_covered` \| `once` \| `avoid` — how a static deadlock is treated: seek it until covered / seek it once / never seek it and treat it as a catastrophe from the start |
 | `--livelock-policy P` | once | same for static livelocks |
+| `--satisfied-target-policy P` | veto | what a satisfied target means to the suggester: `veto` refuses moves into it and plans around it, `penalise` allows it but keeps the hazard penalty, `ignore` treats it as an ordinary state (§8.5) |
 | `--dump-on-deviation M` | none | post-mortem on a deviation: `none` \| `snapshot` \| `crash` |
 | `--dump-on-deadlock M` | none | … on a run-time deadlock |
 | `--dump-on-livelock M` | none | … on a run-time livelock |
@@ -885,8 +940,11 @@ Guidance (the ant colony, §7):
 | `--no-ants` | off | switch the colony off |
 | `--ant-seed N` | 1 | seed of the colony's walks |
 | `--flat-catastrophe` | off | catastrophe deposits stay flat instead of growing with the way in |
-| `--tlist N` | 0 (off) | the (marking, T-list) pair layer; list length 0..8 (§7.2) |
+| `--tsuffix N` | 0 (off) | the (marking, T-suffix) pair layer; list length 0..8 (§7.2) |
 | `--restored-pheromones N` | 50 | percent of the earlier rounds' pheromone strength a continued campaign starts with (§7.3) |
+| `--goal-priority P` | the model's `strategy.goals`, else balanced | `balanced` \| `targets` \| `coverage` — whether targets and milestones or fresh coverage should win (§8.5) |
+| `--error-priority P` | the model's `strategy.errors`, else balanced | `balanced` \| `seek` \| `avoid` — how much risk on the way into an error is accepted and how hard a satisfied error is avoided (§8.5) |
+| `--evaporate-between-runs` | off | the ants still walk at every suggestion, but the pheromone ages once per finished run instead of at every suggestion (§7.4) |
 
 Output:
 
@@ -895,7 +953,7 @@ Output:
 | `--log FILE` | append every run to FILE; if it exists, continue from it (§4) |
 | `--json FILE` | write a machine-readable report |
 | `--coverage-elements` | add every known state and edge with its hit counts to `--json` (§10.5) |
-| `--dump-pheromone FILE` | write the colony's pheromone — per edge and per (marking, T-list) pair — as JSON (§10.5) |
+| `--dump-pheromone FILE` | write the colony's pheromone — per edge and per (marking, T-suffix) pair — as JSON (§10.5) |
 | `--require-complete` | exit 4 if coverage is not complete |
 | `--quiet` | only the final report |
 | `--no-color` | plain text |
@@ -907,7 +965,7 @@ Inspection (`report` only; §10.5):
 | `--runs` | print every run's recorded steps (a long run keeps its last 20) |
 | `--trace N` | print run N's recorded steps in full; N counts from 1 |
 | `--dot FILE` | write the graph for Graphviz, coloured by the coverage reached |
-| `--tlist N` | rebuild the pair store at the campaign's `--tlist`, so `--dump-pheromone` can show it |
+| `--tsuffix N` | rebuild the pair store at the campaign's `--tsuffix`, so `--dump-pheromone` can show it |
 
 `report` also accepts `--coverage-elements` and `--dump-pheromone` from the
 output table above — the same switches, applied to the rebuilt campaign.
@@ -942,6 +1000,153 @@ predicted, §6.11; predicted stimuli crash it as the model says),
 `eggembt report MODEL --log FILE` replays a log and shows coverage plus
 **backtraces** (§10.3); `eggembt compare MODEL LOG_A LOG_B` shows how much two
 campaigns covered the same things.
+
+### 8.5 Declaring what matters: the strategy and the budget
+
+A campaign is always a compromise: chase the still-sought error, or cover
+the fresh edge next door? Re-test the crash (the report matters), or stay
+away from it (the SUT is gone)? The model can state its preference, and the
+command line can overrule it.
+
+**The strategy in the model.** A root-level object, beside `"places"` and
+`"markings"`:
+
+```json
+"strategy": {"goals": "targets", "errors": "seek"}
+```
+
+Both keys are optional; a missing key means `balanced`. `check` prints the
+model's values (`strategy: goals targets, errors seek`), the campaign's
+`Guidance` block names the effective ones, and the JSON carries them (§10.2).
+
+`goals` decides what the suggester treats as the goal, and what the ants
+deposit for:
+
+| value | what changes |
+|-------|--------------|
+| `balanced` | the historical weights: targets and fresh coverage close together |
+| `targets` | targets and milestones matter more than fresh coverage: a fresh transition costs 2 extra steps, a fresh edge 4, an unexplored state 8; target and milestone deposits are 1.5 × louder |
+| `coverage` | fresh behaviour before targets: a still-sought target costs 4 extra steps, while a fresh edge costs nothing extra and an unexplored state 1 |
+
+`errors` decides how much risk on the way is accepted, and how hard an
+already satisfied error is avoided:
+
+| value | what changes |
+|-------|--------------|
+| `balanced` | the historical caution: risk weight 2, hazard weight 20 |
+| `seek` | reach the error first; accept a less robust input (risk weight 1) and a known hazard (hazard weight 10) |
+| `avoid` | demand robustness (risk weight 5) and punish a known way into a satisfied error much harder (hazard weight 40) |
+
+The two halves are independent: `"goals": "coverage", "errors": "avoid"` is
+"cover new behaviour, but do not get near a known error". The command line
+overrides one half at a time, so on such a model `--error-priority seek`
+changes the errors and keeps the coverage goal priority, while
+`--goal-priority targets` changes the goals and keeps the avoidance. Both
+can be given:
+
+```
+eggembt run model.json --simulate --goal-priority targets --error-priority seek
+```
+
+The strategy is advice about *how* to test, not a property of the SUT. It is
+not part of the PNML standard; the export writes it into the annotation
+block (§8.6).
+
+**The phase veto.** Every target has two phases (§5): `seeking` until it
+has been reached often enough, then `satisfied`. A satisfied target's states
+are `forbidden` in the reachability graph: the suggester normally never
+chooses a move into one, plans never pass through one, and a candidate that
+leads there from only some of the possible states pays the `hazard` fraction
+in its score. `--satisfied-target-policy` changes only that reaction:
+
+| value | what the suggester does |
+|-------|-------------------------|
+| `veto` (default) | refuses every move whose every possible effect enters a satisfied target; plans route around them |
+| `penalise` | allows the move and the plan, but still counts the entry as hazard (20 steps at `balanced`, 10 at `seek`, 40 at `avoid`) |
+| `ignore` | allows the move and the plan, and does not count the hazard |
+
+This is useful when a satisfied error marking blocks the only corridor to
+behaviour that is still uncovered: `penalise` lets the campaign pay a run
+for the passage instead of giving up on what lies behind it. The phase
+transition itself is unchanged, and so are the outcomes: a run that reaches
+a satisfied error marking still ends as `error_reached`, a deadlock still
+ends as `deadlock`, and an intentional target still ends the campaign. The
+switch says whether the suggester may *choose* the move, not what happens
+afterwards. The default is the historical, safest behaviour.
+
+**The wall-clock budget.** `--budget DURATION` bounds the whole campaign in
+wall-clock time, not per run:
+
+```
+eggembt run model.json --agent "..." --budget 10m
+```
+
+A bare number is seconds; `ms`, `s`, `m` and `h` are accepted. The value must
+be positive and at most 30 days. The deadline is checked between runs and at
+every turn of a running run, so a long run stops soon after the deadline
+rather than after its event budget. The run that meets the deadline ends as
+an ordinary
+`completed` run with the detail `campaign time budget reached` and
+`"budget_reached": true` in the JSON; the campaign's `stop_reason` becomes
+`time budget reached`.
+
+A budget is planning, not a fault: the exit code stays the one the campaign
+would otherwise have (in particular 0, unless `--require-complete` finds the
+coverage incomplete). And a budget does not pretend the campaign finished:
+`"complete"` stays false unless the campaign really covered everything. The
+default is 0 — no limit — so a campaign still stops on `--max-runs`,
+`--max-events` or completeness.
+
+### 8.6 Exporting to standard PNML
+
+```
+eggembt export MODEL [--output FILE] [--strict]
+```
+
+`export` converts a model to Petri Net Markup Language (ISO/IEC 15909-2), so
+another Petri-net tool can draw, analyse or simulate the net. Without
+`--output` the document goes to standard output (warnings still go to
+standard error); with it, the file is written and a one-line summary names
+the place and transition counts. `--strict` turns loader warnings into
+errors, as everywhere else.
+
+What is standard PNML, and survives every reader:
+
+- places, transitions, and their names;
+- normal arcs and inhibitor arcs, with their weights;
+- **one** initial marking — the model's *first* one. PNML has no way to say
+  "one of several initial markings"; the others are annotations.
+
+The eggembt conventions that are PNML extensions are written the way the
+tool's own PNML loader reads them: a `<toolspecific tool="eggembt"
+kind="..." label="..." rank="..."/>` on each transition keeps the kind, the
+label and the milestone. A net exported by eggembt and imported again
+therefore keeps its input/output/internal character, the wire labels and the
+milestones — the shipped `examples/coffee-pnml.pnml` survives that round
+trip, and so does a model with weights and inhibitor arcs.
+
+Everything PNML cannot express is carried as **annotations**, twice:
+
+- as XML comments beside the elements, for a human reading the file
+  (`<!-- transition "press": controllable, label "coin.insert" -->`,
+  `<!-- place "busy": bound 3 -->`, a note that PNML keeps only the first
+  initial marking);
+- as one machine-readable block at the end,
+  `<toolspecific tool="eggembt" version="..."><text>{...}</text></toolspecific>`,
+  whose JSON holds the full name, the testing strategy, every initial,
+  target and error marking with its policy and crash settings, the place
+  bounds and the transition tags.
+
+The annotations do **not** survive a PNML import: a PNML model has no target
+markings, error markings, bounds or strategy by definition, and the tool's
+loader ignores the eggembt block. The JSON model remains the complete
+specification; the PNML file is the standard-format view of its net. The
+export says so in its header comment.
+
+One technical detail: PNML ids must be XML names. A model whose place or
+transition id is not (say, `1 bad place`) is exported with a generated id
+(`p0`, `t0`); the original id stays in `<name>` and in the annotation block,
+so nothing is lost, but the imported net uses the generated id.
 
 ---
 
@@ -1065,6 +1270,7 @@ Runs  1 recorded  (1 completed)
 
 Guidance  ant colony: 9 round(s), 180 ant walk(s)
   targets: deadlock once, livelock once; coverage threshold 1
+  satisfied targets: veto
   post-mortems: on deviation none, on deadlock none, on livelock none
   catastrophes: priced by the way in; unpredictable transitions 0
   milestones: deposit 1.5 per rank; milestone transitions 0
@@ -1085,7 +1291,7 @@ Time  campaign 0.02 s, mean run 24 ms (longest 24 ms), 333.3 events/s
   listed under "Transitions not definitely covered".
 - **Guidance** reports which steering ran and its switches — the colony's
   iterations and walks, the policies, the post-mortem modes, the catastrophe
-  pricing, the milestones. With the T-list and carry-over switches on, the
+  pricing, the milestones. With the T-suffix and carry-over switches on, the
   `--json` report carries them too (§10.2).
 - **Crash predictions** — when the model declares crash predictions (or a
   death was attributed to an implicit entry), this table follows the run
@@ -1105,12 +1311,18 @@ Time  campaign 0.02 s, mean run 24 ms (longest 24 ms), 333.3 events/s
 `model`, `complete`, `stop_reason`, `runs`, `coverage`, `warnings`, `seed`,
 `ant_seed`, `ants`, `ant_walks`, `ant_iterations`,
 `catastrophe_time_pricing`, `coverage_threshold`, `deadlock_policy`,
-`livelock_policy`, `dump_on_deviation`, `dump_on_deadlock`,
-`dump_on_livelock`, `tlist`, `restored_pheromones`, `crash_level`,
+`livelock_policy`, `satisfied_target_policy`, `dump_on_deviation`, `dump_on_deadlock`,
+`dump_on_livelock`, `tsuffix`, `restored_pheromones`, `crash_level`,
 `crash_attempts`, `crash_predictions`, `hook_timeout`, `hook_runs`,
-`overlap`, `time`.
+`strategy`, `evaporate_between_runs`, `time_budget_ms`, `overlap`, `time`.
+The `strategy` object names the effective priorities (`{"goals": "...",
+"errors": "..."}`); `evaporate_between_runs` says where the pheromone aged
+(§7.4); `time_budget_ms` is the configured budget (0 = none);
+`satisfied_target_policy` names the phase policy (§8.5); and every run
+carries `"budget_reached"` — true for the run the wall-clock budget cut
+short (§8.5).
 The two guidance switches of the 17 November batch are always present,
-e.g. `"tlist": 0, "restored_pheromones": 50`, and so are the three crash keys
+e.g. `"tsuffix": 0, "restored_pheromones": 50`, and so are the three crash keys
 (§6.11): the credibility level, the implicit give-up budget, and per entry
 its site, prediction, status, attempts, crashes and dumps. The hooks keys (§9) are
 always present too: the synchronous bound `hook_timeout`, and `hook_runs`
@@ -1205,19 +1417,19 @@ for known but never visited. The drawing includes the legend.
 what steered the ants:
 
 ```
-{"model": "atm", "tlist": 4, "tau_max": 10, "iterations": 37, "ant_walks": 740,
+{"model": "atm", "tsuffix": 4, "tau_max": 10, "iterations": 37, "ant_walks": 740,
  "edges": [{"from": "...", "transition": "insert_card", "label": "card.insert",
             "to": "...", "attract": 0, "repel": 0.5007, "region": 0}],
  "pairs": [{"state": "confiscated:1, cassette:1, tries:2",
-            "tlist": [2597307718, 78764499, ...], "attract": 0, "repel": 2.6599}]}
+            "tsuffix": [2597307718, 78764499, ...], "attract": 0, "repel": 2.6599}]}
 ```
 
-`edges[]` is the per-edge layer (§7), `pairs[]` the (marking, T-list) store
+`edges[]` is the per-edge layer (§7), `pairs[]` the (marking, T-suffix) store
 with the key in full (§7.2), empty when the layer is off. Names replace ids on
 purpose: edge ids only mean something inside the session that made them.
 
 `report` rebuilds the colony from the log, which records steps but not its
-settings — so give it the campaign's `--tlist N`, or the pair store comes out
+settings — so give it the campaign's `--tsuffix N`, or the pair store comes out
 empty. The rebuild is the documented approximation of §7.3: the milestone and
 catastrophe deposits, toned down by `--restored-pheromones` (default 50). Its
 `iterations` and `ant_walks` are 0 because the log does not record how many
@@ -1320,6 +1532,8 @@ What the number is **not**:
 | **coverage overlap (Jaccard)** | how much two coverages coincide: `|A ∩ B| / |A ∪ B|` per transition, state and edge set, presence only (§10.6) |
 | **novelty** | the colony's "unexplored smells interesting": each edge's weight carries `1/(1 + hits)`, and an ant at a state with an uncovered way out deposits 1.0 and ends its walk (§7.1) |
 | **target marking** | a situation the campaign seeks; **intentional** ones end the campaign successfully (§5) |
+| **target phase** | `seeking` while a target is still a goal; `satisfied` once its policy count is reached, after which its states are forbidden (§8.5) |
+| **phase veto** | the suggester's default refusal to move into a satisfied target; `--satisfied-target-policy` relaxes it (§8.5) |
 | **nontarget region** | states from which no target marking is reachable — a repellent region (§5) |
 | **error marking / error transition** | a declared forbidden situation / step (§6.2, §6.3) |
 | **deviation** | an event the model cannot explain (§6.4) |
@@ -1328,11 +1542,11 @@ What the number is **not**:
 | **aborted** | a run ended by infrastructure trouble, not by the SUT (§6.8) |
 | **ant colony** | the steering heuristic: virtual ants walk the graph and lay pheromone (§7.1) |
 | **pheromone** | attract/repel deposits on edges that steer later choices; evaporate; capped at `tauMax` |
-| **pheromone dump** | the colony written as JSON (`--dump-pheromone`), keyed by markings, transition ids and T-list elements — never by session-local edge ids (§10.5) |
+| **pheromone dump** | the colony written as JSON (`--dump-pheromone`), keyed by markings, transition ids and T-suffix elements — never by session-local edge ids (§10.5) |
 | **milestone** | a transition worth stepping on: deposits 1.5 × rank, never ends a run |
 | **catastrophe** | the pheromone lesson of a found fault, priced by the way in (§6.10) |
-| **T-list** | the list of truncated traces (mini-hashes of the recent trace) an arrival carries; the (marking, T-list) pairs are a finer pheromone basis (§7.2) |
-| **suffix cascade** | the recurrence the T-list elements follow — element k hashes the trace's last k steps (§7.2) |
+| **T-suffix** | the list of truncated traces (mini-hashes of the recent trace) an arrival carries; the (marking, T-suffix) pairs are a finer pheromone basis (§7.2) |
+| **suffix cascade** | the recurrence the T-suffix elements follow — element k hashes the trace's last k steps (§7.2) |
 | **carry-over** | the pheromone teaching of earlier rounds, rebuilt merged and toned down into a continued campaign (§7.3) |
 | **crash prediction** | a nondeterministic SUT crash declared in the model with its probable class; the campaign reproduces it until it is certain (§6.11) |
 | **attempt / crash (of the experiment)** | one definite visit of the predicted place while it seeks / one death attributed to it (§6.11) |
@@ -1344,3 +1558,170 @@ What the number is **not**:
 | **ack** | the tracker's "handled, go on" for a synchronized event; it comes after the event's consequences, including a post-mortem, never for an ordinary event |
 | **lifecycle input** | a controllable transition whose label is one of the reserved words `start`, `restart`, `stop`, `pause`, `resume`: the tester sends it, the SUT's own control does the work, and the engine supplies the landing or closes the gate (§2.3) |
 | **lifecycle gate** | what the campaign may send next: **Running** (everything), **Paused** (`resume`, `stop`, `restart`), **Down** (`start`, `restart`); silence is expected while not Running (§2.3) |
+
+---
+
+## 12. The limits of the approach
+
+The tool is a heuristic tester, and every heuristic has a shape of problem it
+does not fit. This chapter collects the limits that were measured or
+reasoned through while building it, so a user can recognise them instead of
+blaming the model. The pheromone's failure modes are the first four; the
+last ones concern the graph, the model's time and the strategy.
+
+### 12.1 The edge channel saturates, and a sought target outshouts it
+
+The colony caps every edge channel at `tauMax` (10.0). A catastrophe's
+deposit is 3.0 at the shortest way in and grows by 0.25 × 3.0 per input on
+the way (up to 8 inputs), i.e. up to 9.0. A still-sought target deposits
+2.0, and every ant that reaches it deposits again. Two consequences:
+
+- **More walking is not more learning.** Once the edges into a target are
+  saturated, further deposits change nothing; the channel cannot say
+  "twice as bad".
+- **A sought target can cancel the catastrophe.** While a crash prediction
+  or an error is still to be reproduced, TargetBoard keeps it a goal — the
+  campaign must go back. Its attract lands on the same edges as the
+  catastrophe's repel (the same marking, the same prefix), and attract
+  enters the choice weight multiplicatively while repel enters in a decaying
+  exponential. If the history does not separate the two ways in, the attract
+  wins.
+
+This is not theory. The benchmark in `tst_pheromone` (1008 states, 2010
+edges; six runs of 200 events; one crashing shortcut and one safe two-step
+way into the region) gives, seed after seed:
+
+```
+no ants            crashes 5  long runs 1  covered 201
+ants, no T-suffix  crashes 5  long runs 1  covered 201
+ants, T-suffix 4   crashes 3  long runs 3  covered 586
+```
+
+The edge-only colony is *exactly* as good as no colony on this model. Only
+the (marking, T-suffix) layer can say "the crash is the way in *via the
+shortcut*, not the way in via the safe route" and keep both lessons alive.
+So: **pheromones guided only by markings do not work when the good and the
+bad route share their recent history** — which is precisely the interesting
+case for a crash near the start of a run.
+
+### 12.2 The pair layer matches exactly, so it is only as good as the repetition
+
+The pair key is the marking plus the **complete** T-suffix list, element for
+element. There is no similarity, no wildcard, no generalisation:
+
+- Two arrivals whose last *j* steps agree but whose earlier steps differ are
+  different pairs. A lesson at one does not transfer to the other.
+- A short list (`--tsuffix 1` or 2) merges many routes and the crash lesson
+  spills onto safe ones; a long list (7 or 8) fragments the arrivals so
+  finely that the same route is rarely met twice and no lesson accumulates.
+  The default off (0) means the layer does not exist; 4 is the useful
+  middle.
+- The store's size follows the number of distinct (marking, suffix)
+  combinations actually visited. It is pruned only when both channels have
+  evaporated below 1e-4, so a long campaign with a long suffix can carry a
+  large store.
+
+Consequently, pheromones do not help when **the same mistake is never
+repeated along the same recent history** — a genuinely new route each time,
+or an SUT whose step timing differs on every visit. There is nothing to
+learn from; the campaign is then a random walk with coverage bookkeeping.
+The exact cascade is also the reason a *near* repetition does not count:
+the last step alone (`--tsuffix 1`) distinguishes less than the user might
+expect, because the first element already erases everything before it.
+
+### 12.3 Evaporation and long runs
+
+Per suggestion, the attract loses 10 % and the repel 2 %. The repel
+half-life is about 34 suggestions; after 200 suggestions, 1.8 % is left
+(§7.4). So:
+
+- **Within one long run**, a lesson from its beginning is essentially gone
+  by its end unless `--evaporate-between-runs` is used. This is the stage at
+  which evaporation ruins progress: not at the first suggestion, and not
+  between short runs, but *inside a run that makes many suggestions*.
+- **With boundary aging**, the opposite risk appears: one very long run
+  ages nothing at all until it ends. A wrong lesson laid early can steer
+  the whole run, and a lesson from the previous run survives at 98 % even
+  if the SUT has changed in between. There is no adaptive rate.
+
+The campaign repeats runs exactly because a run is short enough to be
+recoverable; evaporation is the second line of defence, not the first.
+
+### 12.4 When the target and the catastrophe are indistinguishable
+
+Even the pair layer cannot separate two routes whose recent histories are
+identical. If the crash and the safe continuation are enabled from the same
+state and the model offers no observable difference before the choice, then
+"arrive at the choice via route A" and "via route B" are the same pair. The
+campaign can only alternate at random, and no amount of pheromone makes it
+certain. The same holds if the crash happens on the *first* step after an
+unmodelled initial action: with no prefix to hash, there is no pair at all.
+
+The practical answer is model design, not more pheromone: make the
+difference observable (a place set by an earlier output, a milestone, a
+sync event), or accept that this crash is only reachable by repetition.
+
+### 12.5 The graph is finite, and the pheromone only knows the graph
+
+`--max-states` (default 1,000,000) and the lazy expansion budgets (500
+states ahead per suggestion, 200 per ant iteration) bound what the tool
+knows. Pheromone, distances and targets all live *inside* the explored
+graph:
+
+- A target or error beyond the truncation is invisible: the suggester can
+  report `Stuck` (goals exist but none is reachable from here) although the
+  SUT could reach them. The run then ends and a new run restarts; the
+  campaign may still never get there.
+- The frontier tier is the only signal toward unknown territory (an ant
+  deposits 1.0 and ends its walk there). That is a weak signal compared to a
+  target's 2.0, and it disappears once the expansion budget is exhausted.
+- A model whose state space is genuinely huge will spend its budget on the
+  graph before it tests, or will test only the explored part. `explore`
+  reports the truncation; the campaign JSON and the console say when states
+  were cut off.
+
+### 12.6 Human and timing unpredictability
+
+A transition marked `"unpredictable": true` is stepped by a human operator.
+Two things follow: the model cannot say *when*, and the tool cannot price
+the wall-clock way in (the delay measured a human, not the SUT), so
+catastrophe deposits stay flat. The ants' plans assume the environment moves
+by the model's rules; a human action that is not pinned by an observable
+output can move the SUT to a marking the pair layer did not predict, and
+the learned suffix then belongs to the wrong situation. Run-time livelock
+detection (`--livelock-timeout`) and the idle timeout are wall-clock
+judgements too: a slow but honest SUT can be declared stuck.
+
+### 12.7 The model must be right, and the strategy is a trade
+
+Everything above assumes the model describes the SUT. A wrong model is the
+worst case for a pheromone-driven tester: the colony learns confidently
+about a system that does not exist, the suggester vetoes inputs that lead to
+"forbidden" states the real SUT would not enter, and a deviation is
+reported late. `check` and `explore` are the cheap cures; a first
+`--simulate` campaign is the second.
+
+The strategy options are deliberately a trade, not a free lunch.
+`--goal-priority targets` can starve coverage of fresh behaviour (the fresh
+edge keeps losing to the target); `--goal-priority coverage` can postpone a
+sought error indefinitely on a large model; `--error-priority seek` accepts
+crashes and dumps that cost wall-clock time, and `--error-priority avoid`
+may keep the campaign away from the very error it was asked to reproduce.
+The wall-clock budget then truncates the campaign wherever it happens to
+be — before the target, if the target was late. None of these is a bug;
+they are the reason the strategy is declared per model and overridable per
+campaign.
+
+### 12.8 The phase veto is a hard rule only at its default
+
+`--satisfied-target-policy penalise` and `ignore` remove the suggester's
+only absolute rule. The hazard term is a penalty in *steps*, so a goal that
+is close enough behind a satisfied target can still win: at `balanced`, a
+certain entry costs 20 steps, which is a lot but not infinite; `ignore`
+removes even that. The run that enters the target still ends with the
+target's outcome — `error_reached`, `deadlock`, or a completed campaign for
+an intentional target — so the price is paid in whole runs, not just in
+suggestion steps. On a model where the satisfied target is the only
+corridor, that is the point; on a model where it is a shortcut to a place
+you can reach safely another way, the runs are simply lost. `veto` remains
+the default for that reason.

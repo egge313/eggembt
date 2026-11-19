@@ -1571,3 +1571,344 @@ wire.
   "not enabled here" instead of inventing a position. Live runs always record
   events (`toPersisted` prefers them), so this only affects hand-written or
   path-only logs.
+
+## 27. Update: 19 November 2026 (DeepSeek V4.1 Flash)
+
+### The requirements
+
+This is the v0.0.2 batch. Egge asked for five things, verbatim:
+
+> Also write a converted JSON specification into standard Petri net format. Can our extra information be included, too? Even as comments?
+
+> Testing strategy as command line options, and possibly parts of the JSON. declare the budget available in wall-clock time. Declare preferred goals, such as "targets and milestones matter more than coverage" or "coverage is as important as targets", and the same about errors.
+
+> Prepare a test to check if evaporation may ruin progress. At what stage does this happen? Would it only make sense to have some evaporation only between runs?
+
+> We need to explore further the limits of our approach, e.g. in which cases pheromones won't work (and document it).
+
+> Don't you think T-list is a bad name? Would T-suffix be better? Change it everywhere.
+
+The benchmark size was settled earlier: "1000 states is okay. Too long tests are not that informative." Everything below is marked `DeepSeek V4.1 Flash` in the source; `src/Version.h` is now `v0.0.2`.
+
+### PNML export
+
+`src/io/PnmlWriter.{h,cpp}` is the counterpiece of `PnmlLoader`. `eggembt
+export MODEL [--output FILE] [--strict]` loads the model through the same
+validating path as every other command and writes a standard PNML document
+(ISO/IEC 15909-2). Without `--output` the document is the only thing on
+standard output, so it can be redirected; loader warnings stay on standard
+error. With `--output`, a one-line summary names the file and its place and
+transition counts.
+
+**What standard PNML carries.** Places and transitions with their names,
+normal arcs, inhibitor arcs (`<type value="inhibitor"/>`), their weights
+(`<inscription>`), and **one** initial marking. PNML has no notion of "one of
+several initial markings", so the model's *first* initial marking is the
+standard one; the file's header comment says so explicitly.
+
+**What eggembt adds in the loader's own dialect.** `PnmlLoader` reads a
+transition's kind, label and milestone from `<toolspecific tool="eggembt"
+kind="..." label="..." rank="..."/>`; the writer emits exactly that, so those
+three survive an export/import round trip (kind, wire label, milestone rank;
+`traced` is emitted too and read back). An unsafe XML id (a place called `1
+bad place`) is replaced by `pN`/`tN`; the original stays in `<name>` and in
+the annotations, but the imported net necessarily uses the generated id.
+
+**Everything PNML cannot carry** — the other initial markings, target and
+error markings with their match mode, policies, hit budgets and crash
+settings, place bounds, transition tags (error, unpredictable, sync) and
+the testing strategy — is
+written twice:
+
+- as XML comments beside the elements, for a human reading the file:
+  `<!-- transition "press_coffee": controllable, label "button.coffee",
+  traced -->`, `<!-- place "busy": bound 3 -->`, `<!-- target "idle"
+  (exact): idle=1 -->`;
+- as one machine-readable block at the end of the page:
+  `<toolspecific tool="eggembt" version="v0.0.2"><text>{...}</text></toolspecific>`,
+  whose JSON holds the same information in a structured form.
+
+The block is deliberately a *tool-specific extension*: `PnmlLoader` ignores
+it, and a PNML import therefore loses every annotation. The JSON model stays
+the complete specification; the export's header comment states the contract.
+The round-trip test proves both halves: the standard net re-imports with the
+same places, transitions, weights, inhibitor arcs and kinds, and the
+annotation block parses as the JSON that names the strategy, all initial,
+target and error markings, the bounds and the transition tags.
+
+One bug found while wiring it: the arc lambda indexed the place table with a
+transition index (and vice versa), so every arc after the first was wrong.
+The fixed writer takes the arc's place and transition separately and only
+uses `intoPlace` to choose the attribute direction; the export test now
+pins `source="idle" target="insert_coin"` for the drink machine.
+
+### The testing strategy
+
+The model can declare its preference at the root, beside `"places"`:
+
+```json
+"strategy": {"goals": "targets", "errors": "seek"}
+```
+
+Both keys are optional; missing means `balanced`. `JsonNetLoader` validates
+the words and reports unknown keys as warnings, like elsewhere. The
+`Session` resolves the effective strategy in this order: the command line
+(`--goal-priority`, `--error-priority`), then the model, then Balanced. The
+resolved values stay in `SessionConfig::goalPriority`/`errorPriority` (as
+optionals with a value), so the reports can name them.
+
+The profiles are expressed in the suggester's own currency (steps; lower
+wins) and in the ants' deposits:
+
+| profile | what it changes |
+|---------|-----------------|
+| goals `balanced` | the historical weights: target 0, new transition 0, edge 2, frontier 4 extra steps |
+| goals `targets` | new transition 2, edge 4, frontier 8; `depositTarget` ×1.5, `depositMilestone` ×1.5 |
+| goals `coverage` | target 4, edge 0, frontier 1 |
+| errors `balanced` | `riskWeight` 2, `hazardWeight` 20 |
+| errors `seek` | `riskWeight` 1, `hazardWeight` 10 |
+| errors `avoid` | `riskWeight` 5, `hazardWeight` 40 |
+
+The two halves are independent, and the command line overrides one at a
+time. `check` prints the model's values, the campaign's `Guidance` block
+prints the effective ones, and `--json` carries `"strategy": {"goals": ...,
+"errors": ...}`. A test in `tst_suggest` proves the choice really flips: a
+still-sought error two steps away wins under `targets` and loses under
+`balanced` and `coverage`; `tst_session` pins every weight of every profile
+and the override order.
+
+### The wall-clock budget
+
+`SessionConfig::timeBudget` is a `std::chrono::milliseconds`, default 0 (no
+limit). `--budget DURATION` accepts a bare number (seconds), or `ms`, `s`,
+`m`, `h`; the value must be positive and at most 30 days. The deadline spans
+the **whole campaign**: `runCampaign` sets it once, checks it before every
+run, and `runOnce` checks it at every turn of its loop. A run that meets the
+deadline ends as `Completed` with the detail `campaign time budget reached`
+and `budgetReached = true`; the campaign's `stopReason` is `time budget
+reached` and the loop stops. Exit codes are untouched — a budget is
+planning, not a fault — and `require-complete` still decides between 0 and 4.
+A direct `runOnce` with a budget and no campaign gets its own deadline, and
+clears it on return; `runCampaign` clears the campaign's deadline when it
+returns, so a later campaign on the same session is unbudgeted again. The
+campaign JSON carries `time_budget_ms` and per-run `"budget_reached"`.
+
+The unit test runs a campaign with 1 ms and 100 runs: it stops with `time
+budget reached`, at most one run exists, that run is `Completed` and
+`budgetReached`, the wall time stays under 5 s, and a second campaign on a
+fresh session without a budget does not inherit the deadline. The CLI test
+uses 1 ms for the stop and 5 s for the "changes nothing" case, and rejects
+`0`, `banana` and `2d`.
+
+### Evaporation: the measurement and the boundary
+
+Egge's question was where evaporation ruins progress, and whether it should
+happen only between runs. The answer is in the measurement.
+
+`AntColony::iterate(starts, evaporate = true)` now walks the ants and then
+calls the new `AntColony::age()` unless the caller asked it not to.
+`age()` is the old evaporation block, unchanged: attract loses 10 %, repel
+2 %, saturated edges lose their attract, and the (marking, T-suffix) pair
+store ages at the same rates and is pruned below 1e-4. `--evaporate-between-runs`
+sets `SessionConfig::evaporateBetweenRuns`; the session then passes
+`evaporate=false` at every suggestion and calls `ants_.age()` once after the
+run — after the final settle, so every deposit of the run has landed.
+
+**At what stage does it hurt?** Inside a *long run*. The repel half-life is
+`ln(0.5)/ln(0.98) ≈ 34` suggestions; a run of 200 suggestions keeps
+`0.98^200 ≈ 1.8 %` of the lesson its beginning laid. Between short runs it
+does not hurt: the lesson is only a few suggestions old when the next run
+starts. Boundary aging removes the intra-run loss but has its own cost: a
+very long run ages nothing until it ends, so a wrong lesson can steer the
+whole run, and a lesson from the previous run survives at 98 % even if the
+SUT changed. There is no adaptive rate; this is why the default stays the
+historical per-suggestion aging.
+
+The benchmark uses the existing 1000-state diamond (1008 states, 2010
+edges; graph seed 7), six runs of 200 events, the pair layer at length 4:
+
+    per-suggestion   crashes 3  long runs 3  covered 586  stimuli 618
+    between runs     crashes 2  long runs 4  covered 777  stimuli 812
+
+The same contrast holds for seeds 1–3 at 200 events (585–586 vs 777 covered)
+and at 400 events (1185 vs 1568). `tst_pheromone`'s new
+`evaporationBetweenRunsKeepsProgress` asserts the structural relations at
+200 events for seeds 1 and 2: same number of runs, fewer crashes, more long
+runs, at least 100 more covered edges, and more stimuli — the campaign
+spends its inputs testing instead of crashing. `tst_ants`'s
+`agingCanWaitForTheRunBoundary` pins the mechanics: 200 walking iterations
+with `evaporate=false` leave the edge and pair deposits exactly unchanged,
+one `age()` leaves 98 %, and 200 per-suggestion iterations leave 1.8 %.
+
+### The limits of the approach
+
+The user manual's new chapter 12 collects what was measured or reasoned
+through; the doku summary:
+
+- **Saturation and the sought target.** `tauMax` is 10; a catastrophe
+  deposits 3.0 growing to 9.0 with the way in, a target 2.0 per ant visit.
+  A still-sought crash is kept attractive by TargetBoard while it is being
+  reproduced, on the same edges as the catastrophe's repel. On the
+  benchmark, the ants with the edge channel alone are *exactly* as good as
+  no ants (`crashes 5, long 1, covered 201`, all three seeds); only the
+  pair layer, which distinguishes the way in, improves it. Pheromones
+  guided by markings alone do not work when the safe and the bad route
+  share their recent history.
+- **Exact-match sparsity.** The pair key is the marking plus the complete
+  suffix list; there is no similarity or generalisation. Short lists merge
+  routes and spill a crash lesson onto safe ones, long lists fragment the
+  arrivals and never meet the same route twice; the store can grow with
+  the distinct (marking, suffix) combinations until pruning. A mistake
+  never repeated on the same recent history teaches nothing.
+- **Evaporation versus long runs** (above), including the inverse risk of
+  boundary aging.
+- **Indistinguishable target and catastrophe.** If the crash and the safe
+  continuation share their recent history, no suffix separates them; with
+  no prefix at all there is no pair. Model design (an earlier observable,
+  a milestone, a sync event) is the answer, not more pheromone.
+- **Truncated graphs.** `--max-states`, the suggester's 500-state and the
+  ants' 200-state expansion budgets bound the known graph. Pheromone,
+  distances and targets live inside it; goals beyond the truncation are
+  invisible and the suggester may report `Stuck`. The frontier deposit
+  (1.0, ending the ant's walk) is the only signal toward the unknown.
+- **Human and timing unpredictability.** `"unpredictable": true` keeps
+  catastrophe deposits flat (the measured wall time was a human's), and a
+  human action not pinned by an observable can invalidate the suffix the
+  pair layer predicted. Run-time livelock and idle timeouts are wall-clock
+  judgements and can condemn a slow but honest SUT.
+- **The model must be right, and strategy is a trade.** A wrong model is
+  learned confidently; `targets` can starve fresh coverage, `coverage` can
+  postpone a sought error, `seek` accepts crashes and dumps, `avoid` can
+  keep the campaign from the error it was asked to reproduce, and a budget
+  can truncate just before the target.
+
+### The T-suffix rename
+
+Egge: "Don't you think T-list is a bad name? Would T-suffix be better?
+Change it everywhere." Done in every live place: `src/engine/TSuffix.h`
+(renamed from `TList.h`), `TraceCascade`'s constants and accessors
+(`kMaxTSuffix`, `tsuffixLength()`, `tsuffix()`), the `"tsuffix"` JSON key,
+the `--tsuffix` switch, the pheromone dump, `report --tsuffix`, the tests,
+the user manual and `docs/`. The two persistence touchpoints stay
+compatible: run logs carry the cascade elements, not the old key name, and
+an old dump is read by element, not by field name; `--tlist` is gone (the
+tool has never promised old spellings).
+
+Historical sections keep the word where it was written: `doku.md` §§16,
+21 and 25 quote Egge's original text and the decisions of their time, and
+`README.md`'s earlier entries do the same. The user manual's §7.2 also
+keeps Egge's quote verbatim, with a note that the live name is T-suffix.
+This section is the record of the rename; no behaviour changed.
+
+### The tests
+
+The suite is now **18 CTest entries — 17 unit suites, 288 unit tests —
+plus `cli_test.sh` (39 scenarios)**, all green:
+
+    cmake --build build
+    ctest --test-dir build          # 18/18, ~52 s
+    sh cli_test.sh                  # 39 tests, 0 failure(s)
+
+New and changed unit tests: `tst_pnml` 24 (export round trip, unsafe ids,
+shipped-example round trip; it was 21), `tst_jsonnetloader` 43 (strategy
+parsed and validated), `tst_session` 55 (strategy profiles and overrides,
+the wall-clock budget), `tst_ants` 23 (boundary aging), `tst_pheromone` 2
+(the evaporation contrast), `tst_suggest` 18 (the goal-priority choice
+flip). The CLI grew four scenarios — `export`, `strategy`, `budget`,
+`evaporation-between-runs` — and moved `version` to v0.0.2. There is still
+no new CTest entry: the export and the strategy/budget are tested inside
+the suites that own their layers, and `cli_test.sh` covers the command
+surface.
+
+The interpretation of the evaporation and limits results is in the user
+manual (§7.4, §8.5, §8.6, §12); this section records how they were
+produced and what was pinned.
+
+## 28. Update: 19 November 2026 (DeepSeek V4.1 Flash)
+
+### The question, and what was already there
+
+Egge asked whether a marking should carry two kinds of pheromone, good and
+bad, with good overriding bad until something avoidable happens, and whether
+pheromones attach to markings or to the arcs between them. The answer in the
+design discussion was that learned pheromone attaches to arcs — the edge
+channels, back-propagated — and that the marking-aware store is the
+`(marking, T-suffix)` pair, not a bare marking. The one place where "good
+overrides bad until something avoidable happens" is the right rule is the
+target phase: a target is a goal while it is `Seeking`, and its states become
+`Forbidden` once it is `Satisfied`. That phase logic already existed in
+`TargetBoard`, and the suggester already vetoed moves into `Forbidden`
+states. Egge chose to make that veto optional rather than add marking-level
+pheromone channels.
+
+### The option
+
+`--satisfied-target-policy P` (config:
+`SuggesterConfig::satisfiedTargets`, type `SatisfiedTargetPolicy` in
+`engine/Suggester.h`) has three values:
+
+| value | goal seeding and plans | hazard |
+|-------|------------------------|--------|
+| `veto` (default) | satisfied targets are skipped; plans never pass through them; a candidate whose every effect enters one is vetoed | counted |
+| `penalise` | satisfied targets are ordinary waypoints; a plan may enter and pass through them | counted |
+| `ignore` | as `penalise` | not counted |
+
+The phase transition itself, `TargetBoard::refresh()`, is untouched: the
+states are still `Seeking` or `Forbidden`, the board still recomputes them
+from the coverage database, and the ant colony still treats a `Forbidden`
+arrival as a catastrophe. Only the suggester's reaction changes. The switch
+is a campaign option, not a model property, and it is not exported to PNML.
+
+`penalise` keeps the existing hazard term: `forbiddenTargets / edges` times
+`hazardWeight` (20 at `balanced`, 10 at `seek`, 40 at `avoid`). That is
+finite by design — a goal close enough behind a satisfied target can still
+win — and is what separates it from `ignore`. The default in the config, the
+help text and every report is `veto`, so a campaign that does not pass the
+option behaves exactly as before.
+
+The implementation points are small and local to `Suggester::suggest()`:
+the goal-seeding loop no longer skips a `Forbidden` state's own frontier and
+uncovered outgoing edges when the veto is off; the backward Dijkstra may
+relax a `Forbidden` predecessor; the candidate evaluation counts the hazard
+unless the policy is `ignore`; and only `veto` pushes a label into
+`Suggestion::vetoed` and refuses the all-forbidden candidate. The console
+`Guidance` block prints `satisfied targets: <policy>` beside the target
+policies, and `--json` always carries `"satisfied_target_policy"`.
+
+### What does not change
+
+The price of entering a satisfied target is still paid in whole runs. A run
+that is certainly in a satisfied error marking ends as `error_reached`; a
+deadlock or livelock ends with its own outcome; an intentional target marking
+still ends the campaign successfully. The option says whether the suggester
+may choose the move, not what the engine does after it. This is the reason
+the default stays `veto`: on a model where the satisfied target is a
+shortcut rather than the only corridor, `penalise` and `ignore` lose runs.
+
+### The tests
+
+`tests/tst_suggest.cpp` gained two tests:
+
+- `satisfiedTargetPolicyPlansThroughTheTarget` reuses the
+  `plansNeverPassThroughForbiddenStates` model (the only uncovered edge lies
+  behind an avoided error) and checks that `Penalise` and `Ignore` both
+  suggest the input that starts the way through, with an empty `vetoed`
+  list. The default still reports `Stuck`.
+- `satisfiedTargetPolicyHazard` enters the satisfied target directly:
+  `Veto` refuses the only candidate (`vetoed == {"direct"}`), `Penalise`
+  suggests it with `hazard == 1.0`, and `Ignore` suggests it with
+  `hazard == 0.0`.
+
+`cli_test.sh` gained the `satisfied-target-policy` scenario: the default
+console line, the `penalise` line, the `ignore` value in the JSON, and the
+usage error for an unknown word. The suite is now **18 CTest entries — 17
+unit suites, 290 unit tests — plus `cli_test.sh` (40 scenarios)**, all green:
+
+    cmake --build build
+    ctest --test-dir build          # 18/18, ~52 s
+    sh cli_test.sh                  # 40 tests, 0 failure(s)
+
+`tst_suggest` is 20 tests; the other suite counts are unchanged. The user
+manual documents the option in §6.2, §8.3, §8.5, §10.1, §10.2, §11 and
+§12.8; `README.md` and `INSTALL.md` carry the updated counts and the new
+scenario.

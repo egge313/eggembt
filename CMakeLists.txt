@@ -77,6 +77,8 @@ add_library(mbt_core STATIC
     src/io/JsonNetLoader.cpp
     src/io/PnmlLoader.h
     src/io/PnmlLoader.cpp
+    src/io/PnmlWriter.h
+    src/io/PnmlWriter.cpp
     src/io/RunLogIO.h
     src/io/RunLogIO.cpp
 )

@@ -1,11 +1,15 @@
-// GLM-5.3-Flash: T-lists (doku section 16).
+// GLM-5.3-Flash: T-suffixes (doku section 16).
 //
-// To each marking, a list of truncated traces -- a T-list -- records the
+// To each marking, a list of truncated traces -- a T-suffix -- records the
 // recent history from which we arrived to the marking. The length of the list
-// is N (default 4, capped at kMaxTList). The Nth element of the T-list is a
-// mini-hash created from the current trace. The (marking, T-list) pairs are
+// is N (default 4, capped at kMaxTSuffix). The Nth element of the T-suffix is a
+// mini-hash created from the current trace. The (marking, T-suffix) pairs are
 // the basis for pheromone generation instead of mere markings (a fine layer
 // beside the edge channels; see engine/AntColony.h).
+//
+// DeepSeek V4.1 Flash: renamed from T-list to T-suffix (doku section 27). The
+// feature, its recurrence and its numbers are unchanged; only the live name
+// and this file's name moved.
 #pragma once
 
 #include "model/Net.h"
@@ -19,7 +23,7 @@ namespace pn {
 
 // The list length is capped: a longer recent history rarely changes where a
 // campaign goes, and the pair keys grow with it.
-inline constexpr std::size_t kMaxTList = 8;
+inline constexpr std::size_t kMaxTSuffix = 8;
 
 // The start value of every element: the hash of an empty suffix. Arbitrary
 // but fixed, so every platform and every replay produces the same lists.
@@ -65,7 +69,7 @@ inline std::uint32_t mix(std::uint32_t carry, std::uint32_t step)
     return h;
 }
 
-// A T-list: N mini-hashes, element k (k = 1..N) being the mini-hash of the
+// A T-suffix: N mini-hashes, element k (k = 1..N) being the mini-hash of the
 // trace's last k steps.
 //
 // THE SUFFIX CASCADE, EXACTLY. A run's trace is its sequence of steps
@@ -76,8 +80,8 @@ inline std::uint32_t mix(std::uint32_t carry, std::uint32_t step)
 //
 // so H_1(m) = mix(kTraceSeed, s_m) depends only on the last step, H_2(m) on
 // the last two, ..., and H_N(m) is the mini-hash created from the current
-// trace, truncated to its last N steps -- the Nth element of the T-list. Two
-// arrivals at a marking share the first j elements of their T-lists exactly
+// trace, truncated to its last N steps -- the Nth element of the T-suffix. Two
+// arrivals at a marking share the first j elements of their T-suffixes exactly
 // when their traces' last j steps agree.
 //
 // The recurrence lets one rolling pass per arriving step maintain the whole
@@ -100,10 +104,10 @@ class TraceCascade {
 public:
     TraceCascade() { h_.fill(kTraceSeed); }
 
-    // 0 switches the layer off; longer values are capped at kMaxTList. Set
+    // 0 switches the layer off; longer values are capped at kMaxTSuffix. Set
     // the length before the first push (the session and the colony set it
     // once from the configuration).
-    void setLength(std::size_t n) { length_ = n < kMaxTList ? n : kMaxTList; }
+    void setLength(std::size_t n) { length_ = n < kMaxTSuffix ? n : kMaxTSuffix; }
     std::size_t length() const { return length_; }
 
     // A run's begin: all N elements are kTraceSeed.
@@ -122,7 +126,7 @@ public:
 
     // The raw elements: h_[i] is element i+1; entries at or beyond length()
     // stay kTraceSeed.
-    const std::array<std::uint32_t, kMaxTList> &elements() const { return h_; }
+    const std::array<std::uint32_t, kMaxTSuffix> &elements() const { return h_; }
 
     // The list extended by one more step, without touching *this -- used to
     // price a candidate edge under the pair its target would create.
@@ -138,7 +142,7 @@ public:
 
 private:
     std::size_t length_ = 0;
-    std::array<std::uint32_t, kMaxTList> h_;
+    std::array<std::uint32_t, kMaxTSuffix> h_;
 };
 
 }  // namespace pn

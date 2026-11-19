@@ -733,3 +733,86 @@ demo's two logs: campaigns 93 / 80 / 80 %, within-campaign 49 / 8 / 6 and
 49 / 7 / 6, cross means 58 / 23 / 22 (transitions / states / edges). It is not
 a coverage measure, not the overlap coefficient `|A ∩ B| / min(|A|, |B|)`, and
 not frequency- or order-aware; the console rounds, `--csv`/`--json` are exact.
+
+### DeepSeek V4.1 Flash — v0.0.2: PNML export, a testing strategy, a budget, evaporation at the run boundary, and an optional phase veto
+
+**PNML export** (`eggembt export MODEL [--output FILE] [--strict]`; user
+manual §8.6, `doku.md` §27). The model is written as standard PNML
+(ISO/IEC 15909-2): places, transitions, normal and inhibitor arcs with their
+weights, and the **first** initial marking. The eggembt conventions the PNML
+loader understands — transition kind, label, milestone rank — are written as
+`<toolspecific tool="eggembt" ...>` and survive a round trip (the shipped
+`examples/coffee-pnml.pnml` is the pinned case). Everything PNML cannot
+express — the other initial markings, target and error markings, policies,
+place bounds, transition tags, crash predictions, the strategy — is written
+twice: as XML comments for the reader and as one machine-readable JSON
+`<toolspecific>` block. Those annotations do not survive an import, and the
+file's header says so. Ids that are not XML names are exported as `pN`/`tN`
+with the original kept in `<name>` and the annotations. Without `--output`
+the document is the only thing on stdout; `check` accepts the result.
+
+**Testing strategy** (user manual §8.5). A root-level model key
+`"strategy": {"goals": "balanced|targets|coverage", "errors":
+"balanced|seek|avoid"}`, overridable per campaign with `--goal-priority` and
+`--error-priority`. `targets` prices fresh transitions 2, edges 4 and
+frontier states 8 extra steps and raises target/milestone deposits 1.5×;
+`coverage` prices a sought target 4 extra steps while fresh edges cost 0 and
+frontier states 1. `seek` sets the suggester's risk/hazard weights to 1/10;
+`avoid` to 5/40. The halves are independent. `check`, the campaign's
+`Guidance` block and the campaign JSON name the effective values. The
+complete JSON remains the authority for what the model says.
+
+**The phase veto is optional.** `--satisfied-target-policy
+veto|penalise|ignore` (user manual §8.5, `doku.md` §28). The default, `veto`,
+keeps the historical rule: the suggester never chooses a move into a
+satisfied target and plans route around it. `penalise` allows the move and
+the plan but keeps the hazard fraction in the score; `ignore` treats a
+satisfied target as an ordinary state. The `Seeking -> Satisfied` transition,
+the outcomes (`error_reached`, `deadlock`) and the intentional-target ending
+are unchanged — the switch only says whether the suggester may choose the
+move. It is useful when a satisfied error marking blocks the only corridor
+to behaviour that is still uncovered, and the relaxation is off by default
+because the price is paid in whole runs.
+
+**Wall-clock budget.** `--budget DURATION` (bare seconds, or `ms/s/m/h`;
+positive, at most 30 days) bounds the whole campaign, not each run. The
+deadline is checked at every run boundary and every loop turn of a running
+run; the cut-short run is a normal `completed` run with the detail `campaign
+time budget reached` and `"budget_reached": true`; the campaign's
+`stop_reason` is `time budget reached`, and the exit code is unchanged. A
+budget is planning, not a fault, and does not make `"complete"` true.
+
+**Evaporation at the run boundary** (`--evaporate-between-runs`; user manual
+§7.4). The ants still walk at every suggestion, but the two pheromone
+channels age once per finished run instead of once per suggestion. The
+question was whether evaporation can ruin progress and at what stage: yes,
+inside a long run. The per-suggestion rates are 10 %/2 %, so the repel
+channel's half-life is ~34 suggestions and a run with 200 suggestions keeps
+only 1.8 % of what its start taught. On the 1000-state diamond benchmark
+(six runs × 200 events), per-suggestion aging crashes the SUT 3 times and
+covers 586 edges; boundary aging crashes twice, keeps four runs productive
+and covers 777. The mechanical test pins 200 walking iterations without
+aging, one `age()` at 98 %, and the old 1.8 % after 200 per-suggestion
+agings. The campaign report names the boundary, and the JSON carries
+`evaporate_between_runs`.
+
+**The limits of the approach** (user manual §12, `doku.md` §27). The new
+chapter documents the measured failure modes: edge-channel saturation and a
+sought target outshouting the catastrophe repel (on the benchmark, ants
+without the T-suffix pair layer are exactly as good as no ants); the pair
+layer's exact-match sparsity (short suffixes merge routes, long ones
+fragment); evaporation versus long runs; target and catastrophe being
+indistinguishable when the recent history is; truncated graphs; human
+unpredictability; and the strategy's deliberate trade-offs.
+
+**T-suffix, not T-list.** The feature and every live name around it were
+renamed: `TSuffix.h`, `kMaxTSuffix`, `tsuffixLength`, the `tsuffix` JSON key,
+the `--tsuffix` switch, the user manual and `docs/`. Historical changelog
+entries (this file, `doku.md` §§16, 21, 25) keep the word as it was written
+then, and Egge's own quoted text keeps it with a note. No behaviour changed.
+
+The suite stands at **18 CTest entries** — 17 unit suites (290 tests;
+`tst_pnml` 24, `tst_jsonnetloader` 43, `tst_session` 55, `tst_ants` 23,
+`tst_pheromone` 2, `tst_suggest` 20) plus `cli_test.sh` (40 scenarios,
++`export`, +`strategy`, +`budget`, +`evaporation-between-runs`,
++`satisfied-target-policy`) — all green.

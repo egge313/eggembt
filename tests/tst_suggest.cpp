@@ -525,6 +525,112 @@ static void testPlansNeverPassThroughForbiddenStates()
     tr.endRun(RunOutcome::Completed);
 }
 
+// DeepSeek V4.1 Flash: with the phase veto relaxed, the same model can be
+// traversed: Penalise and Ignore both plan through the satisfied error to the
+// still-uncovered edge behind it. The phase transition itself is unchanged.
+static void testSatisfiedTargetPolicyPlansThroughTheTarget()
+{
+    NetBuilder b;
+    const auto s0 = b.place("s0");
+    const auto m = b.place("m");
+    const auto e = b.place("e");
+    const auto z = b.place("z");
+    const auto z2 = b.place("z2");
+    const auto a = b.transition("a", TransitionKind::Controllable, "a");
+    const auto mm = b.transition("mm", TransitionKind::Observable, "mm");
+    const auto q = b.transition("q", TransitionKind::Observable, "q");
+    const auto k = b.transition("k", TransitionKind::Controllable, "k");
+    b.input(s0, a).output(a, m);
+    b.input(m, mm).output(mm, e);
+    b.input(e, q).output(q, z);
+    b.input(z, k).output(k, z2);
+    b.initial("start", {{s0, 1}});
+    b.targetMarking("end", {{z2, 1}});
+    ErrorOptions o;
+    o.policy = TargetPolicy::Avoid;
+    b.errorMarking("bad", {{e, 1}}, MatchMode::Exact, o);
+    const Net net = b.build();
+
+    ReachabilityGraph rg(net);
+    rg.addInitial(0);
+    rg.exploreAll();
+    CoverageDb db(rg);
+    pathRun(db, rg, 0, {"a", "mm", "q"});  // everything but k is covered
+
+    for (const SatisfiedTargetPolicy policy : {SatisfiedTargetPolicy::Penalise, SatisfiedTargetPolicy::Ignore}) {
+        SuggesterConfig cfg;
+        cfg.satisfiedTargets = policy;
+        Suggester sg(rg, db, cfg);
+        BeliefTracker tr(rg, &db);
+        tr.beginRun(0);
+        const Suggestion s = sg.suggest(tr);
+        CHECK(s.status == SuggestionStatus::Suggest && s.label == "a");
+        CHECK(s.vetoed.empty());
+        tr.endRun(RunOutcome::Completed);
+    }
+}
+
+// DeepSeek V4.1 Flash: entering a satisfied target directly is the hazard
+// case. Penalise still allows the move but reports the hazard fraction;
+// Ignore drops it; Veto refuses it as before.
+static void testSatisfiedTargetPolicyHazard()
+{
+    NetBuilder b;
+    const auto s0 = b.place("s0");
+    const auto e = b.place("e");
+    const auto z = b.place("z");
+    const auto z2 = b.place("z2");
+    const auto direct = b.transition("direct", TransitionKind::Controllable, "direct");
+    const auto q = b.transition("q", TransitionKind::Observable, "q");
+    const auto k = b.transition("k", TransitionKind::Controllable, "k");
+    b.input(s0, direct).output(direct, e);
+    b.input(e, q).output(q, z);
+    b.input(z, k).output(k, z2);
+    b.initial("start", {{s0, 1}});
+    b.targetMarking("end", {{z2, 1}});
+    ErrorOptions o;
+    o.policy = TargetPolicy::Avoid;
+    b.errorMarking("bad", {{e, 1}}, MatchMode::Exact, o);
+    const Net net = b.build();
+
+    ReachabilityGraph rg(net);
+    rg.addInitial(0);
+    rg.exploreAll();
+    CoverageDb db(rg);
+
+    {
+        Suggester sg(rg, db);  // default: Veto
+        BeliefTracker tr(rg, &db);
+        tr.beginRun(0);
+        const Suggestion s = sg.suggest(tr);
+        CHECK(s.status == SuggestionStatus::Stuck);
+        CHECK(s.vetoed.size() == 1 && s.vetoed[0] == "direct");
+        tr.endRun(RunOutcome::Completed);
+    }
+    {
+        SuggesterConfig cfg;
+        cfg.satisfiedTargets = SatisfiedTargetPolicy::Penalise;
+        Suggester sg(rg, db, cfg);
+        BeliefTracker tr(rg, &db);
+        tr.beginRun(0);
+        const Suggestion s = sg.suggest(tr);
+        CHECK(s.status == SuggestionStatus::Suggest && s.label == "direct");
+        CHECK(s.hazard == 1.0);
+        tr.endRun(RunOutcome::Completed);
+    }
+    {
+        SuggesterConfig cfg;
+        cfg.satisfiedTargets = SatisfiedTargetPolicy::Ignore;
+        Suggester sg(rg, db, cfg);
+        BeliefTracker tr(rg, &db);
+        tr.beginRun(0);
+        const Suggestion s = sg.suggest(tr);
+        CHECK(s.status == SuggestionStatus::Suggest && s.label == "direct");
+        CHECK(s.hazard == 0.0);
+        tr.endRun(RunOutcome::Completed);
+    }
+}
+
 static void testFrontierGoalsLeadIntoUnknownTerritory()
 {
     // s0 -a-> s1 -b-> s2, explored lazily: after one covered run only s0 is expanded.
@@ -809,6 +915,63 @@ static void testTheRobustnessWeightsTheEnvironmentByTakeRate()
     }
 }
 
+// DeepSeek V4.1 Flash: the goal priority really changes a choice (doku
+// section 27). The two-step path "a1", "a2" ends in a still-sought error
+// marking; "b" is a fresh self-loop one step away. Balanced prefers the
+// one-step discovery ("b"); the Targets profile prices fresh transitions so
+// that the error two steps away wins.
+static void testGoalPriorityFlipsTheChoice()
+{
+    NetBuilder b;
+    const auto p = b.place("p");
+    const auto m = b.place("m");
+    const auto q = b.place("q");
+    const auto a1 = b.transition("a1", TransitionKind::Controllable, "a1");
+    const auto a2 = b.transition("a2", TransitionKind::Controllable, "a2");
+    const auto bb = b.transition("b", TransitionKind::Controllable, "b");
+    b.input(p, a1).output(a1, m);
+    b.input(m, a2).output(a2, q);
+    b.input(p, bb).output(bb, p);
+    b.initial("start", {{p, 1}});
+    ErrorOptions fault;
+    fault.targetHits = 2;  // one visit leaves it still sought
+    b.errorMarking("fault", {{q, 1}}, MatchMode::Exact, fault);
+    const Net net = b.build();
+
+    ReachabilityGraph rg(net);
+    rg.addInitial(0);
+    rg.exploreAll();
+    CoverageDb db(rg);
+    pathRun(db, rg, 0, {"a1", "a2"});  // the target path is covered; the error still seeks
+
+    const auto firstPick = [&](const SuggesterConfig &cfg) {
+        Suggester sg(rg, db, cfg);
+        BeliefTracker tr(rg, &db);
+        tr.beginRun(0);
+        const Suggestion s = sg.suggest(tr);
+        tr.endRun(RunOutcome::Completed);
+        CHECK(s.status == SuggestionStatus::Suggest);
+        return s.label;
+    };
+
+    // Balanced: the fresh self-loop is one step away, the error two.
+    CHECK(firstPick(SuggesterConfig{}) == "b");
+
+    // Targets: what Session::config() becomes under GoalPriority::Targets.
+    SuggesterConfig targets;
+    targets.penaltyNewTransition = 2;
+    targets.penaltyEdge = 4;
+    targets.penaltyFrontier = 8;
+    CHECK(firstPick(targets) == "a1");
+
+    // Coverage: what Session::config() becomes under GoalPriority::Coverage.
+    SuggesterConfig coverage;
+    coverage.penaltyTarget = 4;
+    coverage.penaltyEdge = 0;
+    coverage.penaltyFrontier = 1;
+    CHECK(firstPick(coverage) == "b");
+}
+
 // ---------------------------------------------------------------------------
 
 int main()
@@ -825,12 +988,15 @@ int main()
         {"avoidsASatisfiedLivelock", testAvoidsASatisfiedLivelock},
         {"prefersTheMoreRobustInput", testPrefersTheMoreRobustInput},
         {"plansNeverPassThroughForbiddenStates", testPlansNeverPassThroughForbiddenStates},
+        {"satisfiedTargetPolicyPlansThroughTheTarget", testSatisfiedTargetPolicyPlansThroughTheTarget},  // DeepSeek V4.1 Flash
+        {"satisfiedTargetPolicyHazard", testSatisfiedTargetPolicyHazard},  // DeepSeek V4.1 Flash
         {"frontierGoalsLeadIntoUnknownTerritory", testFrontierGoalsLeadIntoUnknownTerritory},
         {"expansionBudgetBoundsLookahead", testExpansionBudgetBoundsLookahead},
         {"coverageDirectedRunReachesFullCoverage", testCoverageDirectedRunReachesFullCoverage},
         {"suggestWithoutARun", testSuggestWithoutARun},
         {"seededTieBreaksVaryAndReproduce", testSeededTieBreaksVaryAndReproduce},  // GLM-5.3-Flash
         {"robustnessWeightsTheEnvironmentByTakeRate", testTheRobustnessWeightsTheEnvironmentByTakeRate},  // GLM-5.3-Flash
+        {"goalPriorityFlipsTheChoice", testGoalPriorityFlipsTheChoice},  // DeepSeek V4.1 Flash
     };
     for (const auto &t : tests) {
         const int before = g_failures;

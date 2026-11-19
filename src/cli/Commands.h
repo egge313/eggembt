@@ -26,4 +26,8 @@ int cmdAgentSim(const std::vector<std::string> &args, std::ostream &out, std::os
 // e.g. recorded with the same seed and with a different one.
 int cmdCompare(const std::vector<std::string> &args, std::ostream &out, std::ostream &err);
 
+// DeepSeek V4.1 Flash: convert a model to standard PNML (doku section 27),
+// with the eggembt-only annotations kept as comments and one toolspecific block.
+int cmdExport(const std::vector<std::string> &args, std::ostream &out, std::ostream &err);
+
 }  // namespace cli

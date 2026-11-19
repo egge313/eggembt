@@ -284,6 +284,44 @@ struct TstJsonNetLoader {
         T_VERIFY(hasIssue(r, LoadIssue::Severity::Warning, "$.markings.target", "deadlock"));
     }
 
+    // DeepSeek V4.1 Flash: the model's testing strategy (doku section 27).
+    void strategyIsParsed()
+    {
+        const LoadResult plain = JsonNetLoader::loadJson(makeDoc());
+        T_VERIFY2(plain.ok(), minitest::cstr(plain.report()));
+        T_COMPARE(plain.net->strategy.goals, pn::GoalPriority::Balanced);
+        T_COMPARE(plain.net->strategy.errors, pn::ErrorPriority::Balanced);
+
+        const LoadResult r = JsonNetLoader::loadJson(
+            "{\"strategy\":{\"goals\":\"coverage\",\"errors\":\"seek\"}," + makeDoc().substr(1));
+        T_VERIFY2(r.ok(), minitest::cstr(r.report()));
+        T_VERIFY(!r.hasWarnings());
+        T_COMPARE(r.net->strategy.goals, pn::GoalPriority::Coverage);
+        T_COMPARE(r.net->strategy.errors, pn::ErrorPriority::Seek);
+    }
+
+    void strategyValuesAreValidated()
+    {
+        const LoadResult bad =
+            JsonNetLoader::loadJson("{\"strategy\":{\"goals\":\"fast\"}," + makeDoc().substr(1));
+        T_VERIFY(!bad.ok());
+        T_VERIFY(hasIssue(bad, LoadIssue::Severity::Error, "$.strategy.goals", "balanced"));
+
+        const LoadResult badErrors =
+            JsonNetLoader::loadJson("{\"strategy\":{\"errors\":\"ignore\"}," + makeDoc().substr(1));
+        T_VERIFY(!badErrors.ok());
+        T_VERIFY(hasIssue(badErrors, LoadIssue::Severity::Error, "$.strategy.errors", "seek"));
+
+        const LoadResult shape = JsonNetLoader::loadJson("{\"strategy\":[]," + makeDoc().substr(1));
+        T_VERIFY(!shape.ok());
+        T_VERIFY(hasIssue(shape, LoadIssue::Severity::Error, "$.strategy", "object"));
+
+        const LoadResult typo =
+            JsonNetLoader::loadJson("{\"strategy\":{\"goal\":\"targets\"}," + makeDoc().substr(1));
+        T_VERIFY2(typo.ok(), minitest::cstr(typo.report()));
+        T_VERIFY(hasIssue(typo, LoadIssue::Severity::Warning, "$.strategy.goal", "unknown key"));
+    }
+
     void unknownKeysAreWarnings()
     {
         const char *arcs =
@@ -882,6 +920,8 @@ int main()
     T_RUN(TstJsonNetLoader, markingMatchModes);
     T_RUN(TstJsonNetLoader, initialMarkingIsRequired);
     T_RUN(TstJsonNetLoader, missingTargetMarkingsWarns);
+    T_RUN(TstJsonNetLoader, strategyIsParsed);  // DeepSeek V4.1 Flash
+    T_RUN(TstJsonNetLoader, strategyValuesAreValidated);  // DeepSeek V4.1 Flash
     T_RUN(TstJsonNetLoader, unknownKeysAreWarnings);
     T_RUN(TstJsonNetLoader, reservedLifecycleLabelsAreParsed);  // DeepSeek V4.1 Flash
     T_RUN(TstJsonNetLoader, arclessTransitionWarns);

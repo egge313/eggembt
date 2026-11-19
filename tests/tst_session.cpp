@@ -4,7 +4,7 @@
 #include "FakeSut.h"
 #include "TempDir.h"
 #include "engine/Session.h"
-#include "engine/TList.h"
+#include "engine/TSuffix.h"
 #include "model/NetBuilder.h"
 
 #include <algorithm>
@@ -1644,7 +1644,7 @@ static void testTheRebuildReplaysWhatTheRunTaught()
 // whose first step is a milestone transition that is ALSO an error transition
 // with a crash post-mortem: the step is certainly credited (its arrival pair
 // gets the milestone's attract), and the run ends SutCrashed on that very
-// step, so the catastrophe's repel lands under the SAME (marking, T-list)
+// step, so the catastrophe's repel lands under the SAME (marking, T-suffix)
 // pair. The milestone report does not name it -- an error step of the same
 // event wins, the run failed there -- but the pair deposit follows the
 // credited step, exactly the rule the rebuild applies to every recorded
@@ -1671,7 +1671,7 @@ static void testThePairLayerFollowsTheRunAndTheRestore()
 
     SessionConfig cfg = quick();
     cfg.maxRuns = 1;             // one crashing run: exact pair amounts
-    cfg.ants.tlistLength = 4;
+    cfg.ants.tsuffixLength = 4;
     Session session(net, cfg);
     SimulatedSut sut(net, SimulatedSutOptions{});
     const CampaignReport rep = session.runCampaign(sut);
@@ -2468,6 +2468,95 @@ static void testThePostMortemSeesTheHeldStack()
     CHECK(sut.acknowledgements() == 1);
 }
 
+// DeepSeek V4.1 Flash: the testing strategy (doku section 27). The model
+// declares it, the command line overrides it, and the profile lands in the
+// suggester's tiers and risk weights and in the ants' deposits.
+static void testStrategyProfiles()
+{
+    NetBuilder b("strategy");
+    const auto p = b.place("p");
+    const auto q = b.place("q");
+    const auto t = b.transition("t", TransitionKind::Controllable, "go");
+    b.input(p, t).output(t, q);
+    b.initial("start", {{p, 1}});
+    b.targetMarking("done", {{q, 1}});
+    Net net = b.build();
+
+    {  // balanced is the built-in default
+        Session s(net, SessionConfig{});
+        CHECK(s.config().suggester.penaltyTarget == 0);
+        CHECK(s.config().suggester.penaltyEdge == 2);
+        CHECK(s.config().suggester.penaltyFrontier == 4);
+        CHECK(near(s.config().suggester.riskWeight, 2.0));
+        CHECK(near(s.config().suggester.hazardWeight, 20.0));
+        CHECK(near(s.config().ants.depositTarget, 2.0));
+        CHECK(near(s.config().ants.depositMilestone, 1.5));
+    }
+    {  // targets first, errors sought
+        net.strategy.goals = GoalPriority::Targets;
+        net.strategy.errors = ErrorPriority::Seek;
+        Session s(net, SessionConfig{});
+        CHECK(s.config().suggester.penaltyEdge == 4);
+        CHECK(s.config().suggester.penaltyFrontier == 8);
+        CHECK(near(s.config().ants.depositTarget, 3.0));      // 2.0 * 1.5
+        CHECK(near(s.config().ants.depositMilestone, 2.25));  // 1.5 * 1.5
+        CHECK(near(s.config().suggester.riskWeight, 1.0));
+        CHECK(near(s.config().suggester.hazardWeight, 10.0));
+    }
+    {  // coverage first, errors avoided
+        net.strategy.goals = GoalPriority::Coverage;
+        net.strategy.errors = ErrorPriority::Avoid;
+        Session s(net, SessionConfig{});
+        CHECK(s.config().suggester.penaltyTarget == 4);
+        CHECK(s.config().suggester.penaltyEdge == 0);
+        CHECK(s.config().suggester.penaltyFrontier == 1);
+        CHECK(near(s.config().suggester.riskWeight, 5.0));
+        CHECK(near(s.config().suggester.hazardWeight, 40.0));
+    }
+    {  // the command line overrides the model, priority by priority
+        net.strategy.goals = GoalPriority::Coverage;
+        net.strategy.errors = ErrorPriority::Avoid;
+        SessionConfig cfg;
+        cfg.goalPriority = GoalPriority::Targets;
+        cfg.errorPriority = ErrorPriority::Balanced;
+        Session s(net, cfg);
+        CHECK(s.config().suggester.penaltyEdge == 4);   // Targets
+        CHECK(s.config().suggester.penaltyTarget == 0);
+        CHECK(near(s.config().suggester.riskWeight, 2.0));  // Balanced
+        CHECK(near(s.config().suggester.hazardWeight, 20.0));
+    }
+}
+
+// DeepSeek V4.1 Flash: the wall-clock budget (doku section 27) ends the
+// campaign as a normal stop -- the running run is Completed, marked
+// budgetReached, and the campaign says why it stopped.
+static void testTheWallClockBudgetEndsTheCampaign()
+{
+    const Net net = makeThreeBranchNet();
+    SessionConfig cfg = quick();
+    cfg.timeBudget = std::chrono::milliseconds(1);
+    cfg.maxRuns = 100;
+    cfg.poll = std::chrono::milliseconds(1);
+    Session session(net, cfg);
+    FakeSut sut(net);
+    const CampaignReport rep = session.runCampaign(sut);
+    CHECK(rep.stopReason == "time budget reached");
+    CHECK(!rep.complete);
+    CHECK(rep.runs.size() <= 1);  // the budget may run out before the first run
+    if (!rep.runs.empty()) {
+        CHECK(rep.runs[0].budgetReached);
+        CHECK(rep.runs[0].outcome == RunOutcome::Completed);
+        CHECK(contains(rep.runs[0].detail, "time budget"));
+    }
+    CHECK(rep.wallMs < 5000);  // the tiny budget was honoured
+    // The deadline does not leak into a later campaign without a budget.
+    SessionConfig unbudgeted = quick();
+    Session second(net, unbudgeted);
+    FakeSut sut2(net);
+    const CampaignReport rep2 = second.runCampaign(sut2);
+    CHECK(rep2.stopReason != "time budget reached");
+}
+
 static void testAPluginThatCannotAckIsNoted()
 {
     const Net net = makeSyncNet();
@@ -2551,6 +2640,8 @@ int main()
         {"withoutTheSwitchNothingIsHeld", testWithoutTheSwitchNothingIsHeld},  // DeepSeek V4.1 Flash
         {"thePostMortemSeesTheHeldStack", testThePostMortemSeesTheHeldStack},  // DeepSeek V4.1 Flash
         {"aPluginThatCannotAckIsNoted", testAPluginThatCannotAckIsNoted},  // DeepSeek V4.1 Flash
+        {"theTestingStrategyLandsInTheWeights", testStrategyProfiles},  // DeepSeek V4.1 Flash
+        {"theWallClockBudgetEndsTheCampaign", testTheWallClockBudgetEndsTheCampaign},  // DeepSeek V4.1 Flash
     };
     for (const auto &t : tests) {
         const int before = g_failures;

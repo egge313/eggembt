@@ -48,7 +48,7 @@ the build tree; nothing outside links against them.
 That is the whole suite: **18 entries** — 17 unit suites plus `cli_test.sh`,
 which spawns the real binary against the examples, over pipes and sockets. It
 takes about a minute on a laptop (the pheromone benchmark is the slow one,
-about six seconds on its own).
+about nine seconds on its own).
 
 Run the end-to-end suite on its own if `ctest` is not at hand (or to see each
 scenario's name):
@@ -56,7 +56,7 @@ scenario's name):
     EGGEMBT=$PWD/build/eggembt EXAMPLES=$PWD/examples \
         REF_AGENT=$PWD/build/ref-agent sh cli_test.sh
 
-It ends with `35 tests, 0 failure(s)`; without `REF_AGENT` set, the
+It ends with `40 tests, 0 failure(s)`; without `REF_AGENT` set, the
 reference-agent scenario is skipped and announced as such. Both invocations
 assume the source tree is the working directory, because the tests read
 `examples/`.
@@ -93,7 +93,7 @@ user-local install, add this to `~/.profile` or `~/.bashrc`:
 
 Then check the version:
 
-    eggembt version            # eggembt v0.0.1
+    eggembt version            # eggembt v0.0.2
 
 The version follows the git branch and lives in `src/Version.h` only; there is
 no configure-time version to pass. Nothing else is installed — no libraries,

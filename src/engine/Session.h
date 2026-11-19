@@ -47,12 +47,13 @@
 #include "engine/RunLog.h"
 #include "engine/Suggester.h"
 #include "engine/SutPlugin.h"
-#include "engine/TList.h"
+#include "engine/TSuffix.h"
 #include "engine/TargetBoard.h"
 
 #include <atomic>
 #include <chrono>
 #include <functional>
+#include <optional>  // DeepSeek V4.1 Flash: strategy overrides
 #include <string>
 #include <vector>
 
@@ -104,8 +105,30 @@ struct SessionConfig {
 
     std::size_t maxRuns = 100;
     std::size_t maxEventsPerRun = 10000;
+    // DeepSeek V4.1 Flash: a wall-clock budget for the whole campaign (doku
+    // section 27). 0 means no limit. The deadline is checked between runs and
+    // during a run's loop; a run cut short ends as Completed with
+    // budgetReached set, and the campaign's stopReason becomes "time budget
+    // reached". A budget is planning advice, not a fault: the exit code stays
+    // that of an ordinary campaign.
+    std::chrono::milliseconds timeBudget{0};
     std::size_t maxConsecutiveAborts = 3;
     std::size_t eventQueueCapacity = 65536;
+
+    // DeepSeek V4.1 Flash: the testing strategy (doku section 27). The model
+    // may declare one with "strategy" in the JSON; these optionals are the
+    // command line's override (--goal-priority / --error-priority). Unset
+    // means "as the model says" (whose default is Balanced/Balanced).
+    std::optional<GoalPriority> goalPriority;
+    std::optional<ErrorPriority> errorPriority;
+
+    // DeepSeek V4.1 Flash: evaporate the pheromone at RUN boundaries instead
+    // of at every suggestion (--evaporate-between-runs, doku section 27). A
+    // long run makes many suggestions; per-suggestion aging decays a lesson
+    // learned at one end of the run before the next run can use it. With this
+    // on, the ants still walk at every suggestion, but both channels age once
+    // per finished run.
+    bool evaporateBetweenRuns = false;
 
     // GLM-5.3-Flash: seed for the suggester's tie-breaks. 0 (the default)
     // keeps the fully deterministic choice: among equally scored inputs the
@@ -131,7 +154,7 @@ struct SessionConfig {
     // GLM-5.3-Flash: how much of an earlier round's pheromone teaching a
     // continued campaign starts with, in percent (doku section 16). The run
     // log saves every round's runs; restoring them rebuilds their milestone
-    // and catastrophe deposits -- and the (marking, T-list) pair deposits --
+    // and catastrophe deposits -- and the (marking, T-suffix) pair deposits --
     // scaled by this factor (the merge of several rounds is unchanged: the
     // deposits accumulate as before). 50, the default, halves the inherited
     // knowledge: it is second-hand and may be stale, so a fresh round should
@@ -177,6 +200,9 @@ struct RunReport {
     std::uint32_t newStates = 0;
     std::uint32_t newEdges = 0;
     std::int64_t durationMs = 0;  // GLM-5.3-Flash: wall-clock time of the run
+    // DeepSeek V4.1 Flash: the campaign's wall-clock budget ended this run
+    // (the outcome is Completed; the campaign stops after it).
+    bool budgetReached = false;
 };
 
 struct CampaignReport {
@@ -244,6 +270,10 @@ private:
 
     Net net_;
     SessionConfig cfg_;
+    // DeepSeek V4.1 Flash: the current campaign's wall-clock deadline. Set by
+    // runCampaign (or by a direct runOnce with a configured budget) and cleared
+    // when that call returns.
+    std::optional<std::chrono::steady_clock::time_point> deadline_;
     ReachabilityGraph rg_;
     CoverageDb db_;
     BeliefTracker tracker_;
@@ -251,7 +281,7 @@ private:
     AntColony ants_;
     EventQueue queue_;
 
-    // GLM-5.3-Flash: the live run's T-list cascade (doku section 16). Its
+    // GLM-5.3-Flash: the live run's T-suffix cascade (doku section 16). Its
     // length comes from the ant configuration at construction; it is reset at
     // every run's begin and advanced with every definite step the tracker
     // credits. The pair deposits and the suggester's pair consults read it;
