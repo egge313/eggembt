@@ -386,6 +386,7 @@ void parseTransitions(const JsonValue &root, Net &net, Diag &d)
                             "unpredictable", "error", "crash_dump", "max_dumps",
                             "milestone", "crash",  // GLM-5.3-Flash: "crash"
                             "command",  // GLM-5.3-Flash: shell command hook
+                            "sync",     // DeepSeek V4.1 Flash: synchronized event
                             "policy", "target_hits"},
                         p, d);
 
@@ -424,6 +425,21 @@ void parseTransitions(const JsonValue &root, Net &net, Diag &d)
         // GLM-5.3-Flash: the tracing default. Observable steps are always
         // reported; internal ones are traced exactly when they carry a label.
         t.traced = t.kind != TransitionKind::Internal || !t.label.empty();
+
+        // DeepSeek V4.1 Flash: the reserved lifecycle labels (doku section 26) are
+        // recognized on controllable transitions only. A warning, not an error:
+        // the model is valid, but the word now carries engine meaning.
+        if (t.kind == TransitionKind::Controllable) {
+            t.lifecycle = lifecycleOf(t.label);
+            if (t.lifecycle != LifecycleAction::None)
+                d.warning(p, "the reserved lifecycle label " + quoted(t.label)
+                                 + " makes this a lifecycle input: the engine sends it to the SUT and applies its "
+                                   "lifecycle meaning (doku section 26)");
+        } else if (lifecycleOf(t.label) != LifecycleAction::None) {
+            d.warning(p, "the label " + quoted(t.label)
+                             + " is reserved for lifecycle control; on an observable or internal transition "
+                               "it stays an ordinary label");
+        }
 
         // GLM-5.3-Flash: an internal transition is traced (reported like an
         // output) when it carries a label. The explicit "traced" key overrides
@@ -563,6 +579,29 @@ void parseTransitions(const JsonValue &root, Net &net, Diag &d)
             }
         }
 
+        // DeepSeek V4.1 Flash: "sync" holds the SUT at this event until the tracker
+        // has acknowledged that it handled the event (doku section 19). Only
+        // the SUT's own moves can carry it: an observable step or a traced
+        // internal one. A controllable transition needs no such hold (its
+        // stimulus is acknowledged already), and an untraced internal step is
+        // never seen, so there is nothing to acknowledge.
+        if (const JsonValue *sy = o.find("sync")) {
+            if (!sy->isBool()) {
+                d.error(sub(p, "sync"), "must be true or false");
+            } else if (sy->asBool()) {
+                if (haveKind && t.kind == TransitionKind::Controllable)
+                    d.error(sub(p, "sync"),
+                            "a synchronized event must be the SUT's own move: a controllable "
+                            "transition is acknowledged as a stimulus already");
+                else if (!t.traced)
+                    d.error(sub(p, "sync"),
+                            "a synchronized event must be visible to the tester: give it a label "
+                            "and \"traced\": true (or make it observable)");
+                else
+                    t.synchronized = true;
+            }
+        }
+
         // GLM-5.3-Flash: steering policies are an error-*marking* concept for
         // now; a transition error is steered by ordinary transition coverage.
         if (o.find("policy"))
@@ -673,7 +712,10 @@ void finishTransitions(Net &net, Diag &d)
         std::sort(t.pre.begin(), t.pre.end(), byPlace);
         std::sort(t.post.begin(), t.post.end(), byPlace);
         std::sort(t.inhibit.begin(), t.inhibit.end(), byPlace);
-        if (t.pre.empty() && t.post.empty() && t.inhibit.empty())
+        // DeepSeek V4.1 Flash: an arc-less lifecycle input is not a mistake -- the
+        // engine supplies its landing (doku section 26), so it neither fires
+        // tokens nor needs arcs.
+        if (t.lifecycle == LifecycleAction::None && t.pre.empty() && t.post.empty() && t.inhibit.empty())
             d.warning(at("$.transitions", i), "transition " + quoted(t.id) + " has no arcs");
     }
 }

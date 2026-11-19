@@ -62,6 +62,17 @@
 
 namespace pn {
 
+// DeepSeek V4.1 Flash: the lifecycle gate (doku section 26). It says what the
+// campaign may send next, not where the model is: while the SUT is paused or
+// down, ordinary inputs would reach a system that cannot answer, so only the
+// lifecycle inputs that bring it back are offered, and quiescence is expected
+// rather than a fault.
+enum class LifecycleGate {
+    Running,  // ordinary suggestions; the SUT answers inputs
+    Paused,   // only resume, stop or restart; silence is expected
+    Down      // only start or restart; the SUT is not running
+};
+
 struct TrackerConfig {
     // 0 disables run-time livelock detection.
     std::int64_t livelockTimeoutMs = 0;
@@ -166,8 +177,16 @@ public:
     const std::vector<TransitionIndex> &ruledOutCommands() const { return ruledOutCommands_; }
 
     // Inputs the tester could send now, with how many possible states enable
-    // each (enabledIn == belief().size() means a safe choice).
+    // each (enabledIn == belief().size() means a safe choice). DeepSeek V4.1
+    // Flash: while the lifecycle gate is not Running, only the lifecycle inputs
+    // it allows are listed; an engine-landed lifecycle input (no post arcs) is
+    // never listed while Running, because it is not an ordinary model step.
     std::vector<ControllableCandidate> enabledControllable() const;
+
+    // DeepSeek V4.1 Flash: the lifecycle gate (doku section 26) and the input it
+    // wants next (kNoTransition: the model offers none, so the run is stuck).
+    LifecycleGate lifecycleGate() const { return gate_; }
+    TransitionIndex suggestedLifecycle() const;
 
     // Labels of outputs / traced steps that may come next.
     std::vector<std::string> expectedLabels() const;
@@ -198,6 +217,19 @@ private:
     std::vector<StateId> closure(const std::vector<StateId> &seeds, std::vector<EventEdge> &silentEdges);
     Applied applyMatching(const std::vector<TransitionIndex> &matching);
     StepResult handleLabelEvent(const SutEvent &ev, bool stimulus);
+    // DeepSeek V4.1 Flash: one stimulating event on the matching transitions,
+    // including the layer and the certainty rule (shared by ordinary inputs and
+    // arc-driven lifecycle inputs).
+    StepResult applyStimulusMatching(const SutEvent &ev, bool stimulus,
+                                     const std::vector<TransitionIndex> &matching);
+    // DeepSeek V4.1 Flash: a stimulus whose label is a reserved lifecycle word
+    // (doku section 26).
+    StepResult handleLifecycle(const SutEvent &ev, const std::vector<TransitionIndex> &matching);
+    // DeepSeek V4.1 Flash: the engine's landing for a lifecycle input without
+    // post arcs -- credit the path so far, then continue the same run from
+    // `state` (a definite visit, reached without an RG edge) with `via`
+    // credited as the step that brought the SUT there.
+    void landAt(StateId state, TransitionIndex via);
     StepResult handleQuiescence();
     StepResult failure(StepStatus status, std::string message, bool outputSide,
                        const std::vector<TransitionIndex> *matching);
@@ -226,6 +258,14 @@ private:
     bool active_ = false;
     std::size_t eventCount_ = 0;
     std::vector<StateId> belief_;
+
+    // DeepSeek V4.1 Flash: the run's initial marking (the landing of an
+    // engine-landed start/restart), the gate, and the belief a pause suspended
+    // (the landing of an engine-landed resume).
+    std::size_t initialIndex_ = 0;
+    StateId initialState_ = kNoState;
+    LifecycleGate gate_ = LifecycleGate::Running;
+    std::vector<StateId> pausedBelief_;
 
     // GLM-5.3-Flash: the transition the most recent label event certainly
     // stepped, if any (see definiteErrorTransition). Reset by quiescence and

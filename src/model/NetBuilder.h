@@ -47,6 +47,10 @@ public:
         t.id = id;
         t.label = label;
         t.kind = kind;
+        // DeepSeek V4.1 Flash: like the JSON loader, a hand-built model gets the
+        // reserved lifecycle meaning from the label (doku section 26).
+        if (kind == TransitionKind::Controllable)
+            t.lifecycle = lifecycleOf(label);
         net_.transitions.push_back(std::move(t));
         net_.transitionIndex.emplace(id, idx);
         tracedOverride_.push_back(std::nullopt);
@@ -71,6 +75,24 @@ public:
     NetBuilder &unpredictable(TransitionIndex t, bool on = true)
     {
         net_.transitions.at(t).unpredictable = on;
+        return *this;
+    }
+
+    // DeepSeek V4.1 Flash: mark a transition as a reserved lifecycle input (doku
+    // section 26). The JSON loader derives this from the label; hand-built
+    // models call it explicitly. build() does not validate the kind.
+    NetBuilder &lifecycle(TransitionIndex t, LifecycleAction action)
+    {
+        net_.transitions.at(t).lifecycle = action;
+        return *this;
+    }
+
+    // DeepSeek V4.1 Flash: hold the SUT at this transition's event until the
+    // tracker acknowledged it (see Transition::synchronized). build() does
+    // not check that the transition is the SUT's own move; the loaders do.
+    NetBuilder &sync(TransitionIndex t)
+    {
+        net_.transitions.at(t).synchronized = true;
         return *this;
     }
 

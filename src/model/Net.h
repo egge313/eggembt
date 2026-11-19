@@ -29,6 +29,62 @@ enum class TransitionKind {
     Internal       // not visible from outside
 };
 
+// DeepSeek V4.1 Flash: the reserved lifecycle transition labels (doku section
+// 26). A CONTROLLABLE transition whose label is one of these words is not an
+// ordinary input: the tester still sends the label to the SUT (the SUT's own
+// start/restart/stop/pause/resume control is what makes the feature usable for
+// SUTs that cannot be restarted from the command line), and the engine applies
+// the word's meaning on top. The words are reserved in exactly this spelling;
+// on an observable or internal transition a label like "start" stays an
+// ordinary label, because a SUT may legitimately report such a word.
+//
+// Landing: a lifecycle transition with post arcs is an ordinary model step --
+// the arcs say where the marking goes. One without post arcs is ENGINE-LANDED:
+// the token game does not fire it (the graph gives it no edge; the state is
+// merely not a deadlock), and the engine supplies the landing:
+//   * start, restart  the run's initial marking (the SUT is back at its
+//                     beginning);
+//   * resume          the belief the pause suspended (the SUT continues where
+//                     it was);
+//   * stop, pause     no landing -- they only set the lifecycle gate.
+enum class LifecycleAction {
+    None,     // not a reserved lifecycle label
+    Start,    // bring the SUT up from "not running"
+    Restart,  // bring it back to the run's beginning
+    Stop,     // take it down until the next start/restart
+    Pause,    // suspend it; its state stays as it is
+    Resume    // continue after a pause
+};
+
+inline const char *toString(LifecycleAction a)
+{
+    switch (a) {
+    case LifecycleAction::None:    return "";
+    case LifecycleAction::Start:   return "start";
+    case LifecycleAction::Restart: return "restart";
+    case LifecycleAction::Stop:    return "stop";
+    case LifecycleAction::Pause:   return "pause";
+    case LifecycleAction::Resume:  return "resume";
+    }
+    return "";
+}
+
+// The exact reserved words. Case-sensitive: "Start" is an ordinary label.
+inline LifecycleAction lifecycleOf(const std::string &label)
+{
+    if (label == "start")
+        return LifecycleAction::Start;
+    if (label == "restart")
+        return LifecycleAction::Restart;
+    if (label == "stop")
+        return LifecycleAction::Stop;
+    if (label == "pause")
+        return LifecycleAction::Pause;
+    if (label == "resume")
+        return LifecycleAction::Resume;
+    return LifecycleAction::None;
+}
+
 enum class MatchMode {
     Exact,   // marking must equal the given tokens (unlisted places hold 0)
     Covers   // marking must hold at least the given tokens; other places are free
@@ -104,8 +160,8 @@ struct CrashPrediction {
 
 // GLM-5.3-Flash: when the hook's shell command runs. A synchronous command
 // blocks the run loop while it executes (bounded by --hook-timeout, the child
-// is killed at the timeout); an asynchronous one is fire-and-forget: mbt does
-// not wait for it and never kills it -- the children are reaped when mbt
+// is killed at the timeout); an asynchronous one is fire-and-forget: eggembt does
+// not wait for it and never kills it -- the children are reaped when eggembt
 // exits.
 enum class HookMode {
     Sync,
@@ -142,6 +198,11 @@ struct Transition {
     std::string label;  // maps to a SUT action/event; may be empty for Internal
     TransitionKind kind = TransitionKind::Internal;
 
+    // DeepSeek V4.1 Flash: set by the loader (and NetBuilder::lifecycle) when a
+    // controllable transition carries a reserved lifecycle label; see
+    // LifecycleAction above. None for every ordinary transition.
+    LifecycleAction lifecycle = LifecycleAction::None;
+
     // GLM-5.3-Flash: whether a step of this transition is reported by the SUT
     // as a visible event (an Observed event carrying the label). Observable
     // transitions are always traced; internal ones are traced when they carry
@@ -149,6 +210,15 @@ struct Transition {
     // (JSON loader), which makes a named internal step silent. NetBuilder::
     // build() and the JSON loader derive the default from kind and label.
     bool traced = false;
+
+    // DeepSeek V4.1 Flash: the SUT is HELD at this transition's event until the
+    // tracker has acknowledged that it handled it (batch 19: synchronized
+    // events). Only the SUT's own moves qualify -- an observable step or a
+    // traced internal one; a controllable transition is acknowledged as a
+    // stimulus already. The loader enforces that. The campaign must also turn
+    // synchronization on (--sync-events): the model opts in per transition,
+    // the run opts in as a whole.
+    bool synchronized = false;
 
     // GLM-5.3-Flash: the transition is driven by a human operator, so the
     // wall clock says nothing about it. A run that steps this transition does

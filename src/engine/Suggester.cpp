@@ -66,6 +66,30 @@ Suggestion Suggester::suggest(const BeliefTracker &tracker)
         return out;
     }
 
+    // DeepSeek V4.1 Flash: while the SUT is paused or down (doku section 26), only
+    // the lifecycle inputs that bring it back are offered; an ordinary
+    // goal-directed input would reach a SUT that cannot answer. The gate is
+    // not a coverage state: no goal search is involved, the way back is all
+    // that matters.
+    if (tracker.lifecycleGate() != LifecycleGate::Running) {
+        Suggestion s;
+        const TransitionIndex t = tracker.suggestedLifecycle();
+        if (t == kNoTransition) {
+            s.status = SuggestionStatus::Stuck;
+            s.reason = tracker.lifecycleGate() == LifecycleGate::Down
+                           ? "the SUT is down and the model offers no start or restart input to bring it back"
+                           : "the SUT is paused and the model offers no resume, stop or restart input";
+            return s;
+        }
+        s.status = SuggestionStatus::Suggest;
+        s.transition = t;
+        s.label = rg_.net().transitions[t].label;
+        s.reason = tracker.lifecycleGate() == LifecycleGate::Down
+                       ? "the SUT is down: the model's own start/restart input brings it back"
+                       : "the SUT is paused: the model's own lifecycle input brings it back";
+        return s;
+    }
+
     const Net &net = rg_.net();
     const std::vector<StateId> belief = tracker.belief();
 

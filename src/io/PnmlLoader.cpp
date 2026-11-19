@@ -385,19 +385,10 @@ std::string baseName(const std::string &path)
     return name;
 }
 
-// One <toolspecific> of interest: tool="mbt" or no tool attribute. Other
-// tools' metadata is ignored silently.
-const XmlNode *mbtSpecific(const XmlNode &el)
-{
-    for (const XmlNode &c : el.children) {
-        if (c.name != "toolspecific")
-            continue;
-        const std::string *tool = c.attr("tool");
-        if (!tool || *tool == "mbt")
-            return &c;
-    }
-    return nullptr;
-}
+// DeepSeek V4.1 Flash: the helper that picked one <toolspecific> is gone -- every
+// reader loops over el.children itself, the kind/label and milestone tags
+// compose in any order, and each accepts both the "eggembt" tool attribute and
+// the legacy "mbt" one.
 
 LoadResult importNet(const std::string &xml, const std::string &sourceName)
 {
@@ -499,14 +490,14 @@ LoadResult importNet(const std::string &xml, const std::string &sourceName)
         }
 
         const XmlNode *specific = nullptr;
-        // GLM-5.3-Flash: the kind/label toolspecific is the first mbt one that
+        // DeepSeek V4.1 Flash: the kind/label toolspecific is the first eggembt one that
         // is not the milestone tag; the milestone tag is read separately
         // below, so the two compose in any order.
         for (const XmlNode &c : el.children) {
             if (c.name != "toolspecific")
                 continue;
             const std::string *tool = c.attr("tool");
-            if (tool && *tool != "mbt")
+            if (tool && *tool != "eggembt" && *tool != "mbt")  // DeepSeek V4.1 Flash: legacy tag
                 continue;
             const std::string *k = c.attr("kind");
             if (k && *k == "milestone")
@@ -558,7 +549,7 @@ LoadResult importNet(const std::string &xml, const std::string &sourceName)
             if (c.name != "toolspecific")
                 continue;
             const std::string *tool = c.attr("tool");
-            if (tool && *tool != "mbt")
+            if (tool && *tool != "eggembt" && *tool != "mbt")  // DeepSeek V4.1 Flash: legacy tag
                 continue;
             const std::string *k = c.attr("kind");
             if (!k || *k != "milestone")

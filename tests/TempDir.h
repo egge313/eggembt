@@ -13,7 +13,7 @@ public:
     {
         static std::atomic<int> counter{0};
         path_ = std::filesystem::temp_directory_path()
-                / ("mbt-test-" + std::to_string(static_cast<long>(::getpid())) + "-" + std::to_string(counter++));
+                / ("eggembt-test-" + std::to_string(static_cast<long>(::getpid())) + "-" + std::to_string(counter++));
         std::filesystem::create_directories(path_);
     }
     ~TempDir()

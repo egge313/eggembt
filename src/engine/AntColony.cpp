@@ -11,6 +11,28 @@ AntColony::AntColony(ReachabilityGraph &rg, const CoverageDb &db, AntConfig conf
     cfg_.backpropDepth = std::max(cfg_.backpropDepth, kMinBackpropDepth);
 }
 
+std::vector<AntColony::PairEntry> AntColony::pairEntries() const
+{
+    // DeepSeek V4.1 Flash: a read-only view of the (marking, T-list) store for the
+    // pheromone dump. Sorted, because the hash map's order is not a contract.
+    std::vector<PairEntry> rows;
+    rows.reserve(pairs_.size());
+    for (const auto &kv : pairs_) {
+        PairEntry e;
+        e.state = kv.first.state;
+        e.tlist = kv.first.tlist;
+        e.attract = kv.second.attract;
+        e.repel = kv.second.repel;
+        rows.push_back(e);
+    }
+    std::sort(rows.begin(), rows.end(), [](const PairEntry &a, const PairEntry &b) {
+        if (a.state != b.state)
+            return a.state < b.state;
+        return a.tlist < b.tlist;
+    });
+    return rows;
+}
+
 void AntColony::setLivelockFindings(const std::vector<LivelockFinding> &findings)
 {
     board_.setLivelockFindings(findings);

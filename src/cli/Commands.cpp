@@ -1,5 +1,6 @@
 #include "cli/Commands.h"
 
+#include "Version.h"  // DeepSeek V4.1 Flash: the version header
 #include "cli/Args.h"
 #include "cli/Report.h"
 #include "engine/AgentServer.h"
@@ -60,8 +61,8 @@ Console makeConsole(const Args &args, std::ostream &out, std::ostream &err)
 
 int usageError(const Console &con, const std::string &message, const char *command)
 {
-    con.err << "mbt " << command << ": " << message << "\n"
-            << "Try: mbt " << command << " --help\n";
+    con.err << "eggembt " << command << ": " << message << "\n"
+            << "Try: eggembt " << command << " --help\n";
     return kExitUsage;
 }
 
@@ -175,7 +176,7 @@ bool buildSimOptions(const Args &args, SimulatedSutOptions &o, const Net &net, s
     if (!args.getInt("sim-deviate-after", v, 0, 1000000000, error))
         return false;
     o.deviateAfterEvents = static_cast<int>(v);
-    o.deviationLabel = args.get("sim-deviation-label", "mbt.simulated.deviation");
+    o.deviationLabel = args.get("sim-deviation-label", "eggembt.simulated.deviation");
     o.snapshot = !args.has("sim-no-snapshot");
     o.crash = !args.has("sim-no-crash");
     for (const std::string &w : args.all("sim-weight")) {
@@ -252,8 +253,8 @@ const char *kSimHelp =
 
 void printUsage(std::ostream &out)
 {
-    out << "mbt " << MBT_VERSION << " - model-based testing with Petri-net specifications\n\n"
-        << "Usage: mbt <command> [options]\n\n"
+    out << "eggembt " << EGGEMBT_VERSION << " - model-based testing with Petri-net specifications\n\n"
+        << "Usage: eggembt <command> [options]\n\n"
         << "Commands:\n"
         << "  check MODEL      validate a model and show what it describes\n"
         << "  explore MODEL    explore the reachability graph: deadlocks, livelocks, Graphviz output\n"
@@ -271,7 +272,7 @@ void printUsage(std::ostream &out)
 static void printCommandHelp(std::ostream &out, const std::string &command)
 {
     if (command == "check") {
-        out << "mbt check MODEL [--strict] [--max-states N] [--no-explore] [--no-color]\n\n"
+        out << "eggembt check MODEL [--strict] [--max-states N] [--no-explore] [--no-color]\n\n"
             << "Validates the model file (all problems are reported at once, with JSON paths), summarises\n"
             // GLM-5.3-Flash: PNML files are accepted, too (doku section 12, item 6).
             << "it, and explores the reachability graph (up to --max-states, default 100000) to report\n"
@@ -280,7 +281,7 @@ static void printCommandHelp(std::ostream &out, const std::string &command)
             << "  --strict       treat warnings as errors (exit 2)\n"
             << "  --no-explore   only validate\n";
     } else if (command == "explore") {
-        out << "mbt explore MODEL [--max-states N] [--list N] [--internal-cycles] [--dot FILE] [--no-color]\n\n"
+        out << "eggembt explore MODEL [--max-states N] [--list N] [--internal-cycles] [--dot FILE] [--no-color]\n\n"
             << "Explores the reachability graph and reports its size, deadlocks, terminal cycles (livelocks)\n"
             << "and error markings.\n\n"
             << "  --max-states N      stop creating states beyond N (default 1000000)\n"
@@ -288,7 +289,7 @@ static void printCommandHelp(std::ostream &out, const std::string &command)
             << "  --internal-cycles   also report cycles of internal transitions only (divergence)\n"
             << "  --dot FILE          write the graph for Graphviz (at most 5000 states)\n";
     } else if (command == "run") {
-        out << "mbt run MODEL (--simulate | --agent \"CMD ARGS\" | --connect HOST:PORT | --listen [ADDR:]PORT | --stdio) [options]\n\n"
+        out << "eggembt run MODEL (--simulate | --agent \"CMD ARGS\" | --connect HOST:PORT | --listen [ADDR:]PORT | --stdio) [options]\n\n"
             << "Runs test runs against a system until everything explored is covered or a limit is hit.\n\n"
             << "  Where the SUT is:\n"
             << "    --simulate            the built-in simulated SUT (conforms to the model; try it first)\n"
@@ -334,20 +335,35 @@ static void printCommandHelp(std::ostream &out, const std::string &command)
             << "                          predictions bring their class's own budget unless they say \"attempts\"\n"
             // GLM-5.3-Flash: the command hooks' bound (doku section 18).
             << "    --hook-timeout S      bound for a synchronous command hook in seconds (default 60);\n"
-            << "                          a child still running past it is killed and counts as failed\n\n"
+            << "                          a child still running past it is killed and counts as failed\n"
+            // DeepSeek V4.1 Flash: synchronized events (doku section 19).
+            << "    --sync-events         hold the SUT at the model's \"sync\" events until the tracker\n"
+            << "                          handled the event; needs a plug-in that can acknowledge\n\n"
             << "  Output:\n"
             << "    --log FILE            append every run to FILE; if it exists, continue from it\n"
             << "    --json FILE           write a machine-readable report\n"
+            // DeepSeek V4.1 Flash: the inspection views (doku section 21).
+            << "    --coverage-elements   add every known state and edge with its hits to the --json report\n"
+            << "    --dump-pheromone FILE write the colony's pheromone (per edge and T-list pair) as JSON\n"
             << "    --require-complete    exit 4 if coverage is not complete\n"
             << "    --quiet               only the final report      --no-color\n\n"
             << kSimHelp;
     } else if (command == "report") {
-        out << "mbt report MODEL --log FILE [--json FILE] [--no-color]\n\n"
+        out << "eggembt report MODEL --log FILE [--json FILE] [--runs | --trace N] [--no-color]\n"
+            << "              [--dot FILE] [--coverage-elements] [--dump-pheromone FILE]\n"
+            << "              [--tlist N]\n\n"
             << "Replays the run log into the model and shows the coverage reached, what is still uncovered,\n"
-            << "the error markings with their budgets, and the findings of the recorded runs.\n";
+            << "the error markings with their budgets, and the findings of the recorded runs.\n\n"
+            // DeepSeek V4.1 Flash: the inspection views (doku section 21).
+            << "  --runs               print every run's recorded steps (a long one keeps its last 20)\n"
+            << "  --trace N            print run N's recorded steps in full\n"
+            << "  --dot FILE           write the graph for Graphviz, coloured by the coverage reached\n"
+            << "  --coverage-elements  add every known state and edge with its hits to --json FILE\n"
+            << "  --dump-pheromone FILE  write the colony's pheromone (per edge and T-list pair) as JSON\n"
+            << "  --tlist N            rebuild the (marking, T-list) pairs at length N; give the campaign's --tlist\n";
     } else if (command == "compare") {
         // GLM-5.3-Flash: the overlap of two campaigns' coverage.
-        out << "mbt compare MODEL LOG_A LOG_B [--csv FILE] [--json FILE] [--no-color]\n\n"
+        out << "eggembt compare MODEL LOG_A LOG_B [--csv FILE] [--json FILE] [--no-color]\n\n"
             << "Replays both run logs into the model and measures how much their coverage overlaps,\n"
             << "per element kind as the Jaccard index (1 = the same coverage, 0 = nothing in common):\n"
             << "the campaigns as a whole, the runs within each campaign, and every run of A against\n"
@@ -356,12 +372,12 @@ static void printCommandHelp(std::ostream &out, const std::string &command)
             << "  --csv FILE   every pairwise index as CSV rows (group,i,j,transitions,states,edges)\n"
             << "               for plots; the matrices in full are also in --json FILE\n";
     } else if (command == "agent-sim") {
-        out << "mbt agent-sim MODEL [--connect HOST:PORT | --listen [ADDR:]PORT] [options]\n\n"
+        out << "eggembt agent-sim MODEL [--connect HOST:PORT | --listen [ADDR:]PORT] [options]\n\n"
             << "A simulated SUT that speaks the plug-in protocol, so that\n"
-            << "  mbt run MODEL --agent \"mbt agent-sim MODEL\"\n"
+            << "  eggembt run MODEL --agent \"eggembt agent-sim MODEL\"\n"
             << "tests it over the real protocol. It also serves as a reference for agent authors.\n"
             << "By default the protocol runs on standard input and output; with --connect the agent dials a\n"
-            << "waiting `mbt run --listen`, with --listen it waits for `mbt run --connect` (--accept-timeout SEC,\n"
+            << "waiting `eggembt run --listen`, with --listen it waits for `eggembt run --connect` (--accept-timeout SEC,\n"
             << "default 60). Logs go to standard error.\n\n"
             << kSimHelp;
     } else {
@@ -460,7 +476,30 @@ static std::string dotEscape(const std::string &s)
     return out;
 }
 
-static bool writeDot(const std::string &path, const Net &net, const ReachabilityGraph &g, std::string *error)
+// DeepSeek V4.1 Flash: one element's Graphviz colour, from its counters (doku
+// section 21): dark green and thick at the threshold, light green below it,
+// orange when only possibly visited, grey when never visited.
+static std::string coverageAttrs(const ElementCoverage &c, std::size_t threshold)
+{
+    std::string colour = "#9e9e9e";
+    int width = 1;
+    if (c.definite >= threshold) {
+        colour = "#2e7d32";
+        width = 3;
+    } else if (c.definite > 0) {
+        colour = "#66bb6a";
+    } else if (c.ambiguous > 0) {
+        colour = "#f0a000";
+    }
+    return ", color=\"" + colour + "\", penwidth=" + std::to_string(width);
+}
+
+// DeepSeek V4.1 Flash: with a coverage database the drawing is coloured by what the
+// campaign reached (doku section 21): green = certainly visited, bold = at or
+// past the threshold, orange = possible only (an ambiguous stretch), grey =
+// never visited. `db` is null for `explore`, which runs before any campaign.
+static bool writeDot(const std::string &path, const Net &net, const ReachabilityGraph &g, const CoverageDb *db,
+                     std::string *error)
 {
     if (g.numStates() > 5000) {
         *error = "the graph has " + std::to_string(g.numStates()) + " states; --dot writes at most 5000 (lower --max-states)";
@@ -474,6 +513,9 @@ static bool writeDot(const std::string &path, const Net &net, const Reachability
     f << "digraph \"" << dotEscape(net.name.empty() ? "model" : net.name) << "\" {\n"
       << "  rankdir=LR;\n  node [shape=box, fontname=monospace, fontsize=10, style=filled, fillcolor=white];\n"
       << "  edge [fontname=monospace, fontsize=9];\n";
+    if (db)
+        f << "  label=\"coverage: green = visited, bold = threshold reached, orange = possible only, grey = never\";\n"
+          << "  labelloc=\"t\";\n";
     for (StateId s = 0; s < g.numStates(); ++s) {
         std::string attrs;
         if (g.kind(s) == StateKind::Target)
@@ -487,15 +529,25 @@ static bool writeDot(const std::string &path, const Net &net, const Reachability
         for (StateId i : g.initialStates())
             if (i == s)
                 attrs += ", peripheries=2";
+        if (db)
+            attrs += coverageAttrs(db->state(s), db->config().threshold);
         f << "  s" << s << " [label=\"" << dotEscape(formatMarking(net, g.marking(s))) << "\"" << attrs << "];\n";
     }
     for (StateId s = 0; s < g.numStates(); ++s) {
         if (!g.isExpanded(s))
             continue;
-        for (const Edge &e : g.successors(s)) {
+        const EdgeRange range = g.successors(s);
+        for (std::size_t i = 0; i < range.size(); ++i) {
+            const Edge &e = range.begin()[i];
             const Transition &t = net.transitions[e.transition];
             const char *style = t.kind == TransitionKind::Controllable ? "solid" : t.kind == TransitionKind::Observable ? "dashed" : "dotted";
-            f << "  s" << s << " -> s" << e.target << " [label=\"" << dotEscape(t.id) << "\", style=" << style << "];\n";
+            std::string extra;
+            if (db) {
+                const EdgeId eid = g.firstEdge(s) + static_cast<EdgeId>(i);
+                extra = coverageAttrs(db->edge(eid), db->config().threshold);
+            }
+            f << "  s" << s << " -> s" << e.target << " [label=\"" << dotEscape(t.id) << "\", style=" << style
+              << extra << "];\n";
         }
     }
     f << "}\n";
@@ -572,8 +624,8 @@ int cmdExplore(const std::vector<std::string> &argv, std::ostream &out, std::ost
         out << "\n" << con.yellow("warning") << " " << w << "\n";
 
     if (args.given("dot")) {
-        if (!writeDot(args.get("dot"), *net, g, &error)) {
-            err << "mbt explore: " << error << "\n";
+        if (!writeDot(args.get("dot"), *net, g, nullptr, &error)) {
+            err << "eggembt explore: " << error << "\n";
             return kExitUsage;
         }
         out << "\nGraph written to " << args.get("dot") << "\n";
@@ -589,7 +641,9 @@ int cmdReport(const std::vector<std::string> &argv, std::ostream &out, std::ostr
 {
     ArgSpec spec;
     addCommonSpec(spec);
-    spec.valued.insert({"log", "json"});
+    // DeepSeek V4.1 Flash: the inspection views (doku section 21).
+    spec.flags.insert({"runs", "coverage-elements"});
+    spec.valued.insert({"log", "json", "trace", "dot", "dump-pheromone", "tlist"});
     Args args;
     std::string error;
     Console plain{out, err};
@@ -609,17 +663,24 @@ int cmdReport(const std::vector<std::string> &argv, std::ostream &out, std::ostr
 
     const RunLogReadResult log = readRunLog(args.get("log"));
     if (!log.ok) {
-        err << "mbt report: " << log.error << "\n";
+        err << "eggembt report: " << log.error << "\n";
         return kExitUsage;
     }
     if (log.contents.fingerprint != graphFingerprint(*net)) {
-        err << "mbt report: " << args.get("log") << " was recorded for a different model (the graph changed)\n";
+        err << "eggembt report: " << args.get("log") << " was recorded for a different model (the graph changed)\n";
         return kExitUsage;
     }
     for (const std::string &w : log.contents.warnings)
         err << con.yellow("warning") << " " << args.get("log") << ": " << w << "\n";
 
+    // DeepSeek V4.1 Flash: the log records the steps, not the colony's settings, so
+    // a rebuilt pair store needs the campaign's own --tlist (doku section 21).
+    long long tlist = 0;
+    if (args.given("tlist") && !args.getInt("tlist", tlist, 0, 8, &error))
+        return usageError(con, error, "report");
+
     SessionConfig cfg;
+    cfg.ants.tlistLength = static_cast<std::size_t>(tlist);
     Session session(*net, cfg);
     std::size_t replayed = 0;
     for (std::size_t i = 0; i < log.contents.runs.size(); ++i) {
@@ -638,15 +699,41 @@ int cmdReport(const std::vector<std::string> &argv, std::ostream &out, std::ostr
     printCrashPredictions(con, session.coverage());  // GLM-5.3-Flash
     printHookRuns(con, session.coverage());  // GLM-5.3-Flash
 
+    // DeepSeek V4.1 Flash: the inspection views (doku section 21). Traces come from
+    // the log's own steps, so they show what was recorded, not a re-derivation.
+    long long traceRun = 0;
+    if (args.given("trace") && !args.getInt("trace", traceRun, 1, 1000000, &error))
+        return usageError(con, error, "report");
+    if (traceRun > 0)
+        printTraces(con, *net, log.contents.runs, static_cast<int>(traceRun), true);
+    else if (args.has("runs"))
+        printTraces(con, *net, log.contents.runs, 0, false);
+
+    if (args.given("dot")) {
+        if (!writeDot(args.get("dot"), *net, session.graph(), &session.coverage(), &error)) {
+            err << "eggembt report: " << error << "\n";
+            return kExitUsage;
+        }
+        out << "\nGraph written to " << args.get("dot") << "\n";
+    }
+    if (args.given("dump-pheromone")) {
+        std::ofstream f(args.get("dump-pheromone"));
+        f << pheromoneJson(*net, session).dump() << "\n";
+        if (!f)
+            err << "eggembt report: cannot write " << args.get("dump-pheromone") << "\n";
+        else
+            out << "Pheromone written to " << args.get("dump-pheromone") << "\n";
+    }
+
     if (args.given("json")) {
         JsonValue j = JsonValue::object();
         j.set("model", JsonValue::string(net->name));
         j.set("runs_replayed", JsonValue::number(static_cast<double>(replayed)));
-        j.set("coverage", coverageJson(*net, session.coverage()));
+        j.set("coverage", coverageJson(*net, session.coverage(), args.has("coverage-elements")));
         std::ofstream f(args.get("json"));
         f << j.dump() << "\n";
         if (!f) {
-            err << "mbt report: cannot write " << args.get("json") << "\n";
+            err << "eggembt report: cannot write " << args.get("json") << "\n";
             return kExitUsage;
         }
     }
@@ -685,11 +772,11 @@ int cmdCompare(const std::vector<std::string> &argv, std::ostream &out, std::ost
     const auto replayLog = [&](const std::string &path, Session &session) -> bool {
         const RunLogReadResult log = readRunLog(path);
         if (!log.ok) {
-            err << "mbt compare: " << log.error << "\n";
+            err << "eggembt compare: " << log.error << "\n";
             return false;
         }
         if (log.contents.fingerprint != fingerprint) {
-            err << "mbt compare: " << path << " was recorded for a different model (the graph changed)\n";
+            err << "eggembt compare: " << path << " was recorded for a different model (the graph changed)\n";
             return false;
         }
         for (const std::string &w : log.contents.warnings)
@@ -799,7 +886,7 @@ int cmdCompare(const std::vector<std::string> &argv, std::ostream &out, std::ost
                 row("cross", i, j, cross.transitions[i * nb + j], cross.states[i * nb + j],
                     cross.edges[i * nb + j]);
         if (!f) {
-            err << "mbt compare: cannot write " << args.get("csv") << "\n";
+            err << "eggembt compare: cannot write " << args.get("csv") << "\n";
             return kExitUsage;
         }
         out << "  pairwise indices written to " << args.get("csv") << "\n";
@@ -846,7 +933,7 @@ int cmdCompare(const std::vector<std::string> &argv, std::ostream &out, std::ost
         std::ofstream f(args.get("json"));
         f << j.dump() << "\n";
         if (!f) {
-            err << "mbt compare: cannot write " << args.get("json") << "\n";
+            err << "eggembt compare: cannot write " << args.get("json") << "\n";
             return kExitUsage;
         }
     }
@@ -899,7 +986,7 @@ int cmdAgentSim(const std::vector<std::string> &argv, std::ostream &out, std::os
             return usageError(quietCon, "--connect needs HOST:PORT", "agent-sim");
         link = tcpConnect(host, port, 10000, &error);
         if (!link) {
-            err << "mbt agent-sim: " << error << "\n";
+            err << "eggembt agent-sim: " << error << "\n";
             return kExitInfra;
         }
     } else if (args.given("listen")) {
@@ -909,13 +996,13 @@ int cmdAgentSim(const std::vector<std::string> &argv, std::ostream &out, std::os
             return usageError(quietCon, "--listen needs [ADDR:]PORT", "agent-sim");
         TcpListener listener;
         if (!listener.open(host, port, &error)) {
-            err << "mbt agent-sim: " << error << "\n";
+            err << "eggembt agent-sim: " << error << "\n";
             return kExitInfra;
         }
-        err << "mbt agent-sim: listening on " << host << ":" << listener.port() << "\n";
+        err << "eggembt agent-sim: listening on " << host << ":" << listener.port() << "\n";
         link = listener.accept(static_cast<int>(acceptTimeout) * 1000, &error);
         if (!link) {
-            err << "mbt agent-sim: " << error << "\n";
+            err << "eggembt agent-sim: " << error << "\n";
             return kExitInfra;
         }
     }
@@ -934,9 +1021,9 @@ int cmdAgentSim(const std::vector<std::string> &argv, std::ostream &out, std::os
         link = std::make_unique<StreamTransport>(std::cin, out);  // the protocol owns standard output here
 #endif
     }
-    AgentServer server(sut, *link, "mbt-agent-sim");
+    AgentServer server(sut, *link, "eggembt-agent-sim");
     server.start();
-    err << "mbt agent-sim: serving \"" << (net->name.empty() ? args.positional[0] : net->name) << "\"\n";
+    err << "eggembt agent-sim: serving \"" << (net->name.empty() ? args.positional[0] : net->name) << "\"\n";
     while (!server.waitUntilFinished(std::chrono::milliseconds(200))) {
     }
     return kExitOk;
@@ -974,13 +1061,14 @@ int cmdRun(const std::vector<std::string> &argv, std::ostream &stdoutStream, std
     addCommonSpec(spec);
     addSimSpec(spec);
     spec.flags.insert({"simulate", "stdio", "no-ants", "no-analyze", "require-complete", "strict",
-                       "flat-catastrophe"});  // GLM-5.3-Flash
+                       "flat-catastrophe", "sync-events", "coverage-elements"});  // DeepSeek V4.1 Flash
     spec.valued.insert({"agent", "connect", "listen", "accept-timeout", "hello-timeout", "max-runs", "max-events",
                         "quiescence", "livelock-timeout", "livelock-min-events", "idle-timeout", "ack-timeout", "poll",
                         "threshold", "initial", "seed", "ant-seed", "max-states", "deadlock-policy", "livelock-policy",
                         "dump-on-deviation", "dump-on-deadlock", "dump-on-livelock", "log", "json",
                         "tlist", "restored-pheromones",
-                        "crash-level", "crash-attempts", "hook-timeout"});  // GLM-5.3-Flash
+                        "crash-level", "crash-attempts", "hook-timeout",
+                        "dump-pheromone"});  // DeepSeek V4.1 Flash
     Args args;
     std::string error;
     Console con = makeConsole(args, stdoutStream, stderrStream);
@@ -1059,7 +1147,7 @@ int cmdRun(const std::vector<std::string> &argv, std::ostream &stdoutStream, std
     cfg.coverage.crashLevel = crashLevel;
     cfg.coverage.crashAttempts = static_cast<std::uint32_t>(crashAttempts);
     // GLM-5.3-Flash: the command hooks (doku section 18). The open run log's
-    // path travels to every hook as MBT_LOG.
+    // path travels to every hook as EGGEMBT_LOG.
     cfg.hookTimeoutSeconds = static_cast<std::uint32_t>(hookTimeout);
     cfg.logPath = args.get("log");
     cfg.graph.maxStates = static_cast<std::size_t>(maxStates);
@@ -1068,6 +1156,9 @@ int cmdRun(const std::vector<std::string> &argv, std::ostream &stdoutStream, std
     // GLM-5.3-Flash: --flat-catastrophe switches the time pricing of the
     // catastrophe pheromones off (deposits stay at the base level).
     cfg.catastropheTimePricing = !args.has("flat-catastrophe");
+    // DeepSeek V4.1 Flash: --sync-events holds the SUT at the model's "sync" events
+    // until the tracker acknowledged them (doku section 19).
+    cfg.syncEvents = args.has("sync-events");
 
     if (args.given("deadlock-policy") && !parsePolicy(args.get("deadlock-policy"), cfg.targets.deadlock))
         return usageError(log, "--deadlock-policy must be until_covered, once or avoid", "run");
@@ -1099,11 +1190,11 @@ int cmdRun(const std::vector<std::string> &argv, std::ostream &stdoutStream, std
         if (std::filesystem::exists(logPath, ec) && std::filesystem::file_size(logPath, ec) > 0) {
             const RunLogReadResult r = readRunLog(logPath);
             if (!r.ok) {
-                log.err << "mbt run: " << r.error << "\n";
+                log.err << "eggembt run: " << r.error << "\n";
                 return kExitUsage;
             }
             if (r.contents.fingerprint != fingerprint) {
-                log.err << "mbt run: " << logPath << " belongs to a different model; use another file\n";
+                log.err << "eggembt run: " << logPath << " belongs to a different model; use another file\n";
                 return kExitUsage;
             }
             for (const std::string &w : r.contents.warnings)
@@ -1111,7 +1202,7 @@ int cmdRun(const std::vector<std::string> &argv, std::ostream &stdoutStream, std
             restored = r.contents.runs;
         }
         if (!writer.open(logPath, fingerprint, &error)) {
-            log.err << "mbt run: " << error << "\n";
+            log.err << "eggembt run: " << error << "\n";
             return kExitUsage;
         }
         cfg.runSink = [&writer, &log](const PersistedRun &run) {
@@ -1177,7 +1268,7 @@ int cmdRun(const std::vector<std::string> &argv, std::ostream &stdoutStream, std
                 return usageError(log, "--listen needs [ADDR:]PORT", "run");
             TcpListener listener;
             if (!listener.open(host, port, &error)) {
-                log.err << "mbt run: " << error << "\n";
+                log.err << "eggembt run: " << error << "\n";
                 return kExitInfra;
             }
             log.out << "Waiting for an agent on " << host << ":" << listener.port() << " ...\n" << std::flush;
@@ -1198,12 +1289,12 @@ int cmdRun(const std::vector<std::string> &argv, std::ostream &stdoutStream, std
             return usageError(log, "this option needs POSIX sockets and processes, which this build does not have; use --stdio or --simulate", "run");
         }
         if (!ep.transport) {
-            log.err << "mbt run: " << error << "\n";
+            log.err << "eggembt run: " << error << "\n";
             return kExitInfra;
         }
         ep.remote = std::make_unique<RemotePlugin>(*ep.transport);
         if (!ep.remote->waitForHello(std::chrono::milliseconds(helloTimeout))) {
-            log.err << "mbt run: the agent did not say hello within " << helloTimeout << " ms\n";
+            log.err << "eggembt run: the agent did not say hello within " << helloTimeout << " ms\n";
             return kExitInfra;
         }
         const PluginCapabilities caps = ep.remote->capabilities();
@@ -1300,6 +1391,18 @@ int cmdRun(const std::vector<std::string> &argv, std::ostream &stdoutStream, std
         log.out << "  commands: " << commandCount << " transition(s), timeout "
                 << sessionCfg.hookTimeoutSeconds << " s\n";
 
+    // DeepSeek V4.1 Flash: synchronized events (doku section 19): how many the model
+    // marks, and whether this campaign holds them.
+    std::size_t syncCount = 0;
+    for (const Transition &t : net.transitions)
+        if (t.synchronized)
+            ++syncCount;
+    if (syncCount > 0)
+        log.out << "  sync: " << syncCount << " transition(s), "
+                << (sessionCfg.syncEvents ? "held until acknowledged (--sync-events)"
+                                          : "not held (no --sync-events)")
+                << "\n";
+
     // GLM-5.3-Flash: the time criterion next to coverage, and how much the
     // runs of this campaign overlap.
     printTime(log, report);
@@ -1307,9 +1410,19 @@ int cmdRun(const std::vector<std::string> &argv, std::ostream &stdoutStream, std
 
     if (args.given("json")) {
         std::ofstream f(args.get("json"));
-        f << campaignJson(net, session, report).dump() << "\n";
+        f << campaignJson(net, session, report, args.has("coverage-elements")).dump() << "\n";
         if (!f)
-            log.err << "mbt run: cannot write " << args.get("json") << "\n";
+            log.err << "eggembt run: cannot write " << args.get("json") << "\n";
+    }
+    // DeepSeek V4.1 Flash: the pheromone dump (doku section 21), written after the
+    // campaign so it holds what steered it.
+    if (args.given("dump-pheromone")) {
+        std::ofstream f(args.get("dump-pheromone"));
+        f << pheromoneJson(net, session).dump() << "\n";
+        if (!f)
+            log.err << "eggembt run: cannot write " << args.get("dump-pheromone") << "\n";
+        else
+            log.out << "\nPheromone written to " << args.get("dump-pheromone") << "\n";
     }
 
     bool failures = false;

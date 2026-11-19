@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- GLM-5.3-Flash: the PNML import example (doku section 12, item 6).
-     Shows the mbt conventions: a toolspecific kind+label on every visible
+     Shows the eggembt conventions: a toolspecific kind+label on every visible
      transition, the '?'-prefix fallback on a controllable, a milestone tag
      with rank 2, an inhibitor arc, and per-place initial markings that the
      loader unions into one marking.
@@ -8,8 +8,8 @@
      AND the lamp token) so the model is not one big terminal cycle: PNML
      cannot declare target markings, and without an exit every move into the
      serving cycle would be vetoed as a livelock of the specification.
-     Try: mbt check examples/coffee-pnml.pnml
-          mbt run examples/coffee-pnml.pnml --simulate -->
+     Try: eggembt check examples/coffee-pnml.pnml
+          eggembt run examples/coffee-pnml.pnml --simulate -->
 <pnml xmlns="http://www.pnml.org/version-2009/grammar/pnml">
   <net id="coffee-pnml" type="P/T net">
     <name><text>coffee-pnml</text></name>
@@ -26,22 +26,22 @@
       <place id="brewing"/>
       <place id="off"/>
       <transition id="coin">
-        <toolspecific tool="mbt" kind="controllable" label="coin.insert"/>
+        <toolspecific tool="eggembt" kind="controllable" label="coin.insert"/>
       </transition>
       <transition id="brew">
-        <toolspecific tool="mbt" kind="controllable" label="button.brew"/>
+        <toolspecific tool="eggembt" kind="controllable" label="button.brew"/>
       </transition>
       <transition id="serve">
-        <toolspecific tool="mbt" kind="observable" label="drink.served"/>
+        <toolspecific tool="eggembt" kind="observable" label="drink.served"/>
         <!-- a milestone of rank 2: a certainly stepped serve deposits
              double milestone pheromones -->
-        <toolspecific tool="mbt" kind="milestone" rank="2"/>
+        <toolspecific tool="eggembt" kind="milestone" rank="2"/>
       </transition>
       <!-- the '?' prefix is the fallback for a controllable without a
            toolspecific: kind controllable, label "flush" -->
       <transition id="?flush"/>
       <transition id="switch_off">
-        <toolspecific tool="mbt" kind="controllable" label="power.off"/>
+        <toolspecific tool="eggembt" kind="controllable" label="power.off"/>
       </transition>
       <arc id="a1" source="idle" target="coin"/>
       <arc id="a2" source="coin" target="paid"/>

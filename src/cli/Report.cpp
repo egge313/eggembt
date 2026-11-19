@@ -264,6 +264,17 @@ void printBacktraces(const Console &con, const Net &net, const ReachabilityGraph
         }
     }
 
+    // DeepSeek V4.1 Flash: the name column follows the longest name printed, so a
+    // long label never runs into its chain (a fixed 16 made `bank.stolen_report`
+    // and its chain read as one word).
+    std::size_t nameWidth = 16;
+    for (std::size_t t = 0; t < net.transitions.size(); ++t) {
+        if (db.transitionHits(static_cast<TransitionIndex>(t)) == 0)
+            continue;
+        const Transition &tr = net.transitions[t];
+        nameWidth = std::max(nameWidth, tr.label.empty() ? tr.id.size() : tr.label.size());
+    }
+
     std::string rows;
     for (std::size_t t = 0; t < net.transitions.size(); ++t) {
         if (db.transitionHits(static_cast<TransitionIndex>(t)) == 0)
@@ -274,7 +285,9 @@ void printBacktraces(const Console &con, const Net &net, const ReachabilityGraph
             chain = chainText(net, rg, db.edgeBacktrace(anchorEdge[t]));
         else
             chain = "(visited, but never on a certain edge: the visits are transition-level only)";
-        rows += "  " + padRight(!tr.label.empty() ? tr.label : tr.id, 16) + chain + "\n";
+        // One separator space on top of the column: padRight leaves a name
+        // that fills the column untouched, and it must not touch its chain.
+        rows += "  " + padRight(!tr.label.empty() ? tr.label : tr.id, nameWidth) + " " + chain + "\n";
     }
     if (rows.empty())
         return;
@@ -315,7 +328,7 @@ void printTime(const Console &con, const CampaignReport &report)
 // GLM-5.3-Flash: how much the runs of a campaign overlap. Low numbers mean
 // the steering spread the testing out; 100% would mean every run repeated
 // the same coverage. The full pairwise matrices are in the --json report
-// and in `mbt compare`.
+// and in `eggembt compare`.
 void printOverlap(const Console &con, const OverlapMatrix &m)
 {
     if (m.n < 2)
@@ -355,7 +368,7 @@ JsonValue overlapJson(const OverlapMatrix &m)
     return o;
 }
 
-JsonValue coverageJson(const Net &net, const CoverageDb &db)
+JsonValue coverageJson(const Net &net, const CoverageDb &db, bool elements)
 {
     const CoverageSummary s = db.summary();
     JsonValue cov = JsonValue::object();
@@ -420,10 +433,62 @@ JsonValue coverageJson(const Net &net, const CoverageDb &db)
         milestones.push(m);
     }
     cov.set("milestones", milestones);
+
+    // DeepSeek V4.1 Flash: the per-element view (--coverage-elements, doku section
+    // 21). Off by default because a large graph makes this large; on, every
+    // known state and edge is listed with its hit counts and runs, so a
+    // campaign can be inspected in detail after the fact.
+    if (elements) {
+        const ReachabilityGraph &rg = db.graph();
+        JsonValue states = JsonValue::array();
+        for (StateId s = 0; s < rg.numStates(); ++s) {
+            const ElementCoverage &c = db.state(s);
+            JsonValue j = JsonValue::object();
+            j.set("marking", JsonValue::string(formatMarking(net, rg.marking(s))));
+            j.set("definite", JsonValue::number(static_cast<double>(c.definite)));
+            j.set("ambiguous", JsonValue::number(static_cast<double>(c.ambiguous)));
+            j.set("covered", JsonValue::boolean(c.definite >= db.config().threshold));
+            if (c.firstRun != kNoRun)
+                j.set("first_run", JsonValue::number(static_cast<double>(c.firstRun + 1)));
+            if (c.lastRun != kNoRun)
+                j.set("last_run", JsonValue::number(static_cast<double>(c.lastRun + 1)));
+            states.push(j);
+        }
+        cov.set("states", states);
+
+        JsonValue edges = JsonValue::array();
+        for (StateId s = 0; s < rg.numStates(); ++s) {
+            if (!rg.isExpanded(s))
+                continue;
+            const EdgeRange range = rg.successors(s);
+            for (std::size_t i = 0; i < range.size(); ++i) {
+                const EdgeId e = rg.firstEdge(s) + static_cast<EdgeId>(i);
+                const Edge &ed = rg.edge(e);
+                const Transition &tr = net.transitions[ed.transition];
+                const ElementCoverage &c = db.edge(e);
+                JsonValue j = JsonValue::object();
+                j.set("from", JsonValue::string(formatMarking(net, rg.marking(s))));
+                j.set("transition", JsonValue::string(tr.id));
+                if (!tr.label.empty())
+                    j.set("label", JsonValue::string(tr.label));
+                j.set("to", JsonValue::string(formatMarking(net, rg.marking(ed.target))));
+                j.set("definite", JsonValue::number(static_cast<double>(c.definite)));
+                j.set("ambiguous", JsonValue::number(static_cast<double>(c.ambiguous)));
+                j.set("covered", JsonValue::boolean(c.definite >= db.config().threshold));
+                if (c.firstRun != kNoRun)
+                    j.set("first_run", JsonValue::number(static_cast<double>(c.firstRun + 1)));
+                if (c.lastRun != kNoRun)
+                    j.set("last_run", JsonValue::number(static_cast<double>(c.lastRun + 1)));
+                edges.push(j);
+            }
+        }
+        cov.set("edges", edges);
+    }
     return cov;
 }
 
-JsonValue campaignJson(const Net &net, const Session &session, const CampaignReport &report)
+JsonValue campaignJson(const Net &net, const Session &session, const CampaignReport &report,
+                       bool coverageElements)
 {
     JsonValue o = JsonValue::object();
     o.set("model", JsonValue::string(net.name));
@@ -462,7 +527,7 @@ JsonValue campaignJson(const Net &net, const Session &session, const CampaignRep
         runs.push(j);
     }
     o.set("runs", runs);
-    o.set("coverage", coverageJson(net, session.coverage()));
+    o.set("coverage", coverageJson(net, session.coverage(), coverageElements));
 
     // GLM-5.3-Flash: the time criterion. Total wall time, mean run duration,
     // and how many SUT events a second of testing bought. Also per run, as
@@ -544,6 +609,14 @@ JsonValue campaignJson(const Net &net, const Session &session, const CampaignRep
     // executions per run. Always emitted so the schema does not depend on
     // the model or on what ran.
     o.set("hook_timeout", JsonValue::number(static_cast<double>(cfg.hookTimeoutSeconds)));
+    // DeepSeek V4.1 Flash: synchronized events (doku section 19): the campaign
+    // switch and how many transitions the model marks. Always emitted.
+    o.set("sync_events", JsonValue::boolean(cfg.syncEvents));
+    std::size_t syncTransitions = 0;
+    for (const Transition &t : net.transitions)
+        if (t.synchronized)
+            ++syncTransitions;
+    o.set("sync_transitions", JsonValue::number(static_cast<double>(syncTransitions)));
     JsonValue hookRuns = JsonValue::array();
     for (RunId i = 0; i < session.coverage().numRuns(); ++i) {
         const RunRecord &r = session.coverage().run(i);
@@ -568,6 +641,118 @@ JsonValue campaignJson(const Net &net, const Session &session, const CampaignRep
         hookRuns.push(hr);
     }
     o.set("hook_runs", hookRuns);
+    return o;
+}
+
+
+// ---------------------------------------------------------------------------
+// DeepSeek V4.1 Flash: inspection views (doku section 21)
+// ---------------------------------------------------------------------------
+
+// One step's display name: the transition's label when it has one, else its
+// id -- the same rule backtraces use. The log records ids, so the net has to
+// say what to print.
+static std::string stepName(const Net &net, const std::string &id)
+{
+    const std::optional<TransitionIndex> t = net.findTransition(id);
+    if (!t)
+        return id;
+    const Transition &tr = net.transitions[*t];
+    return tr.label.empty() ? tr.id : tr.label;
+}
+
+void printTraces(const Console &con, const Net &net, const std::vector<PersistedRun> &runs, int onlyRun, bool full)
+{
+    if (runs.empty())
+        return;
+    if (onlyRun > 0 && static_cast<std::size_t>(onlyRun) > runs.size()) {
+        con.out << "\n" << con.bold("Traces") << "  the log has " << runs.size() << " run(s), no run " << onlyRun
+                << "\n";
+        return;
+    }
+    const std::size_t cap = full ? 0 : 20;  // --trace shows everything
+    con.out << "\n" << con.bold("Traces") << "  ("
+            << (onlyRun > 0 ? "run " + std::to_string(onlyRun) : "the recorded steps of every run")
+            << ", oldest first)\n";
+    for (std::size_t i = 0; i < runs.size(); ++i) {
+        if (onlyRun > 0 && i + 1 != static_cast<std::size_t>(onlyRun))
+            continue;
+        const PersistedRun &r = runs[i];
+        std::vector<std::string> steps;
+        if (!r.transitions.empty()) {
+            for (const std::string &id : r.transitions)
+                steps.push_back(stepName(net, id));
+        } else {
+            // An event run records its live events instead of a path.
+            for (const SutEvent &e : r.events)
+                steps.push_back(e.label.empty() ? "[" + std::string(toString(e.kind)) + "]" : e.label);
+        }
+
+        const bool elided = cap > 0 && steps.size() > cap;
+        const std::size_t first = elided ? steps.size() - cap : 0;
+        std::string chain = r.initialMarking.empty() ? "?" : r.initialMarking;
+        if (elided)
+            chain += " > ...";
+        for (std::size_t k = first; k < steps.size(); ++k)
+            chain += " > " + steps[k];
+        if (full && !r.detail.empty())
+            chain += "  (" + truncate(r.detail, 60) + ")";
+
+        con.out << "  run " << padRight(std::to_string(i + 1), 4) << padRight(std::string(toString(r.outcome)), 14)
+                << chain;
+        if (elided)
+            con.out << "  [" << steps.size() << " steps]";
+        con.out << "\n";
+    }
+}
+
+JsonValue pheromoneJson(const Net &net, const Session &session)
+{
+    const ReachabilityGraph &rg = session.graph();
+    const AntColony &ants = session.ants();
+    JsonValue o = JsonValue::object();
+    o.set("model", JsonValue::string(net.name));
+    o.set("tlist", JsonValue::number(static_cast<double>(ants.tlistLength())));
+    o.set("tau_max", JsonValue::number(ants.tauMax()));
+    o.set("iterations", JsonValue::number(static_cast<double>(ants.stats().iterations)));
+    o.set("ant_walks", JsonValue::number(static_cast<double>(ants.stats().ants)));
+
+    JsonValue edges = JsonValue::array();
+    for (StateId s = 0; s < rg.numStates(); ++s) {
+        if (!rg.isExpanded(s))
+            continue;
+        const EdgeRange range = rg.successors(s);
+        for (std::size_t i = 0; i < range.size(); ++i) {
+            const EdgeId e = rg.firstEdge(s) + static_cast<EdgeId>(i);
+            const Edge &ed = rg.edge(e);
+            const Transition &tr = net.transitions[ed.transition];
+            JsonValue j = JsonValue::object();
+            j.set("from", JsonValue::string(formatMarking(net, rg.marking(s))));
+            j.set("transition", JsonValue::string(tr.id));
+            if (!tr.label.empty())
+                j.set("label", JsonValue::string(tr.label));
+            j.set("to", JsonValue::string(formatMarking(net, rg.marking(ed.target))));
+            j.set("attract", JsonValue::number(ants.attract(e)));
+            j.set("repel", JsonValue::number(ants.repel(e)));
+            j.set("region", JsonValue::number(ants.region(e)));
+            edges.push(j);
+        }
+    }
+    o.set("edges", edges);
+
+    JsonValue pairs = JsonValue::array();
+    for (const AntColony::PairEntry &p : ants.pairEntries()) {
+        JsonValue j = JsonValue::object();
+        j.set("state", JsonValue::string(formatMarking(net, rg.marking(p.state))));
+        JsonValue list = JsonValue::array();
+        for (std::size_t k = 0; k < ants.tlistLength() && k < kMaxTList; ++k)
+            list.push(JsonValue::number(static_cast<double>(p.tlist[k])));
+        j.set("tlist", list);
+        j.set("attract", JsonValue::number(p.attract));
+        j.set("repel", JsonValue::number(p.repel));
+        pairs.push(j);
+    }
+    o.set("pairs", pairs);
     return o;
 }
 

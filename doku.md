@@ -171,21 +171,21 @@ Everything above is the original document of 7 November 2026, left unchanged. Th
 ### Corrections to the status above
 
 - There are no Qt-dependent parts in this tree. The "written but not compiled" Qt loader, run-log I/O and line transport of §9 do not exist here: the project is Qt-free end to end. `src/io` holds the plain C++17 JSON model loader (`JsonNetLoader`), the run-log reader and writer (`RunLogIO`) and the transports (`StreamTransport`, `FdTransport`, `ProcessTransport`, `TcpListener` / `tcpConnect`).
-- The command-line runner (first half of open item 2) is implemented and tested: `mbt run`, `check`, `explore`, `report` and `agent-sim`, with `--json` reports, run-log continuation and agents over standard streams, child processes or TCP.
+- The command-line runner (first half of open item 2) is implemented and tested: `eggembt run`, `check`, `explore`, `report` and `agent-sim`, with `--json` reports, run-log continuation and agents over standard streams, child processes or TCP.
 - Everything compiles and passes: 12 unit test suites plus `cli_test.sh` (22 scenarios) — 13 CTest entries, all green, now built with `-Wall -Wextra` as §10 promises. §10's "not yet verified" no longer applies.
 
 ### Changes made this session
 
-- **Stdio exit deadlock fixed.** `StreamTransport`'s reader blocks in `std::getline` over `std::cin`, holding stdin's C stdio lock; `exit()` then waits for that lock forever while flushing the streams, so `mbt run --stdio` and `mbt agent-sim` hung instead of exiting. On POSIX both now use the poll-based, stoppable `FdTransport(0, 1, false)`; `StreamTransport` remains for non-POSIX builds (two sites in `src/cli/Commands.cpp`, marked).
+- **Stdio exit deadlock fixed.** `StreamTransport`'s reader blocks in `std::getline` over `std::cin`, holding stdin's C stdio lock; `exit()` then waits for that lock forever while flushing the streams, so `eggembt run --stdio` and `eggembt agent-sim` hung instead of exiting. On POSIX both now use the poll-based, stoppable `FdTransport(0, 1, false)`; `StreamTransport` remains for non-POSIX builds (two sites in `src/cli/Commands.cpp`, marked).
 - **`--no-ants`.** The ant colony can be switched off (`SessionConfig::useAnts`, surfaced as `Session::antsEnabled()`). The report says which guidance ran: a `Guidance` block on the console and `ants` / `ant_iterations` / `ant_walks` in the `--json` output, always emitted so the schema does not depend on the switch. Tested in `tests/tst_session.cpp` (`theAntColonyCanBeSwitchedOff`) and `cli_test.sh` (`no-ants`).
 - **The remaining guidance switches are surfaced in the report.** `--deadlock-policy`, `--livelock-policy`, `--dump-on-deviation`, `--dump-on-deadlock`, `--dump-on-livelock` and `--threshold` were accepted but invisible afterwards. The `--json` report now always carries `deadlock_policy`, `livelock_policy`, `dump_on_deviation`, `dump_on_deadlock`, `dump_on_livelock` and `coverage_threshold`; the console `Guidance` block lists the same values (`targets: deadlock …, livelock …; coverage threshold N`, `post-mortems: on deviation …, on deadlock …, on livelock …`); `Session::config()` exposes the effective configuration; `toString(TargetPolicy)` in `src/model/Net.h` fixes the one spelling (`until_covered` / `once` / `avoid`). Tested in `cli_test.sh` (`guidance-in-report`).
 - **`docs/PLUGIN_PROTOCOL.md` written.** The dangling reference in §8 (and in `src/engine/Protocol.h` / `AgentServer.h`) now resolves: the full wire specification with field tables, an example run, the checklist for agent authors, and a map of the code that implements it.
 - **`--seed N`: reproducible campaigns with steered tie-breaks.** Until now the input choice was fully deterministic — among equally scored inputs the more robust one won, then the lower transition index — so every campaign over the same model and settings picked exactly the same inputs; the only seeds were the ant colony (`--ant-seed`) and the simulated SUT (`--sim-seed`). A non-zero `--seed` now randomises the *last resort only*: when several inputs are exactly tied (same effective score and same robustness), the pick is drawn from a seeded `std::mt19937_64` stream (`SessionConfig::selectionSeed` → `SuggesterConfig::tieBreakSeed`; seed 0 keeps the old behaviour byte for byte). One campaign stays reproducible from its seed, different seeds steer different campaigns, and the quality ranking is untouched. The `--json` report names both seeds (`seed`, `ant_seed`) so a campaign can be reproduced from the report alone. The SUT's own indeterminacy is unaffected — a real SUT may still answer differently, which is fine and interesting. Tested in `tests/tst_suggest.cpp` (`seededTieBreaksVaryAndReproduce`), `tests/tst_session.cpp` (`theSeedSteersAndReproducesCampaigns`) and `cli_test.sh` (`seed`, byte-compare on the deterministic counter model).
 - **Testing time as a second criterion next to coverage.** Coverage alone does not say what a campaign cost. Every run now measures its wall-clock duration (`RunReport::durationMs`), the campaign its total (`CampaignReport::wallMs`); the `--json` report gains per-run `duration_ms` and a `time` section (`wall_ms`, `mean_run_ms`, `events_per_s` — how many SUT events a second of testing bought), and the console output a `Time` block. This is the number that tells seeds and configurations apart when their coverage is equal: the same coverage in half the time is the better campaign. Wall-clock numbers are, by nature, not reproducible — the `seed` scenario's byte-compare strips the time fields before comparing, because the reproducibility claim is about the *selection*, not about timing. Tested in `tests/tst_session.cpp` (`theCampaignMeasuresItsTime`) and `cli_test.sh` (`time-and-overlap`).
-- **Coverage overlap: how much do two test runs have in common?** New `src/engine/OverlapAnalysis.{h,cpp}`: the Jaccard index |A∩B|/|A∪B| of the covered element sets, computed per run, per campaign and pairwise, separately for transitions, states and edges. For exact per-run attribution `CoverageDb` now records, alongside `steps` and `events`, every state a run definitely visited (including those credited without a known edge in ambiguous stretches) and every transition that certainly fired (including the ambiguous-layer credits); a replayed run reconstructs the same sets, so campaigns can be compared after the fact from their run logs. The campaign `--json` report gained an `overlap` section (full pairwise matrices and `mean_pairwise` means; low means mean the steering spread the testing out, 100% would mean every run repeated the same coverage), the console a one-line `Overlap` summary. New command **`mbt compare MODEL LOG_A LOG_B [--csv FILE] [--json FILE]`**: replays both run logs and reports the campaigns' mutual overlap, the diversity within each campaign, and the run-against-run matrix (printed as a percent grid while it fits the terminal; `--csv` writes every pair as `group,i,j,transitions,states,edges` rows for plots). Tested in `tests/tst_overlap.cpp` (new suite: set attribution, the index, matrix symmetry, empty runs count as identical) and `cli_test.sh` (`compare`: a log against itself is 100%, CSV/JSON output).
+- **Coverage overlap: how much do two test runs have in common?** New `src/engine/OverlapAnalysis.{h,cpp}`: the Jaccard index |A∩B|/|A∪B| of the covered element sets, computed per run, per campaign and pairwise, separately for transitions, states and edges. For exact per-run attribution `CoverageDb` now records, alongside `steps` and `events`, every state a run definitely visited (including those credited without a known edge in ambiguous stretches) and every transition that certainly fired (including the ambiguous-layer credits); a replayed run reconstructs the same sets, so campaigns can be compared after the fact from their run logs. The campaign `--json` report gained an `overlap` section (full pairwise matrices and `mean_pairwise` means; low means mean the steering spread the testing out, 100% would mean every run repeated the same coverage), the console a one-line `Overlap` summary. New command **`eggembt compare MODEL LOG_A LOG_B [--csv FILE] [--json FILE]`**: replays both run logs and reports the campaigns' mutual overlap, the diversity within each campaign, and the run-against-run matrix (printed as a percent grid while it fits the terminal; `--csv` writes every pair as `group,i,j,transitions,states,edges` rows for plots). Tested in `tests/tst_overlap.cpp` (new suite: set attribution, the index, matrix symmetry, empty runs count as identical) and `cli_test.sh` (`compare`: a log against itself is 100%, CSV/JSON output).
 - **The `"traced"` key for internal transitions.** Internal steps were tagged only implicitly: an internal transition *with* a label was reported like an output ("traced"), one *without* was silent. That had a footgun — adding a label purely for display or the run log silently flipped the step from silent to reported. The loader now accepts an explicit `"traced": true|false` on internal transitions (default unchanged: labeled ⇒ traced, unlabeled ⇒ silent). It is an error elsewhere: `traced: true` without a label has nothing to report, and on controllable/observable transitions the visibility is part of the testing protocol, not a per-model choice. Engine-wide the decision now lives in `Transition::traced` (derived in `NetBuilder::build()`, settable via `NetBuilder::traced()` for hand-built models), used by the belief tracker (label maps, `expectedLabels`, the silent-step crediting), the simulated SUT and the `check` kind counts — so a *named but silent* internal step works everywhere. Tested in `tests/tst_jsonnetloader.cpp` (`tracedKeyDefaultsAndOverrides`, `tracedKeyIsRejectedWhereItDoesNotApply`), `tests/tst_session.cpp` (`aNamedInternalStepIsReportedOnlyWhenTraced`) and `cli_test.sh` (`check-reports-every-model-error`).
-- **Truncated reachability graphs tested (state limit).** The question "how does the tester react when `--max-states` cuts the graph off, and does it expand unresolved nodes?" is now pinned by tests (`tests/tst_session.cpp`, marked): the graph is lazy and the limit stops the *creation* of states, not their expansion — during runs the tracker and the suggester expand every state they stand on (plus up to `expansionBudget`, 500, states ahead), so the graph grows on demand until the cap; at the cap, edges into new markings are dropped and the source is marked incomplete. A cut-off frontier is never mistaken for a deadlock or a livelock (deadlock is judged on the marking, not on edges; the static analysis only reports *certain* findings when no involved state is incomplete), the session warns "the model was not explored completely", and when the SUT walks past the region the graph can represent, the run ends in a deviation whose message says "[the explored model may be incomplete here]". Tests: `aStateLimitTruncatesTheGraphWithoutFalseFindings`, `theGraphGrowsLazilyDuringTheCampaign`, `anSutBeyondTheTruncatedModelIsFlaggedAsPossiblyIncomplete`; end to end, `cli_test.sh` scenario `state-limit` (`mbt explore --max-states` and `mbt run --max-states` over a counting model).
-- **Missing pieces reconstructed** during assembly: `tests/ElevatorModel.h` (the shared elevator model), `README.md`, `.gitignore`, and the Qt-free `CMakeLists.txt` (`mbt_engine`, `mbt_core`, `mbt_agent`, the `mbt` application, the tests and the `cli_test.sh` wiring).
+- **Truncated reachability graphs tested (state limit).** The question "how does the tester react when `--max-states` cuts the graph off, and does it expand unresolved nodes?" is now pinned by tests (`tests/tst_session.cpp`, marked): the graph is lazy and the limit stops the *creation* of states, not their expansion — during runs the tracker and the suggester expand every state they stand on (plus up to `expansionBudget`, 500, states ahead), so the graph grows on demand until the cap; at the cap, edges into new markings are dropped and the source is marked incomplete. A cut-off frontier is never mistaken for a deadlock or a livelock (deadlock is judged on the marking, not on edges; the static analysis only reports *certain* findings when no involved state is incomplete), the session warns "the model was not explored completely", and when the SUT walks past the region the graph can represent, the run ends in a deviation whose message says "[the explored model may be incomplete here]". Tests: `aStateLimitTruncatesTheGraphWithoutFalseFindings`, `theGraphGrowsLazilyDuringTheCampaign`, `anSutBeyondTheTruncatedModelIsFlaggedAsPossiblyIncomplete`; end to end, `cli_test.sh` scenario `state-limit` (`eggembt explore --max-states` and `eggembt run --max-states` over a counting model).
+- **Missing pieces reconstructed** during assembly: `tests/ElevatorModel.h` (the shared elevator model), `README.md`, `.gitignore`, and the Qt-free `CMakeLists.txt` (`mbt_engine`, `mbt_core`, `mbt_agent`, the `eggembt` application, the tests and the `cli_test.sh` wiring).
 - **The case for having ants, pinned by tests.** When the SUT crashes, finding the root cause takes wall-clock time; the campaign should spend that time testing somewhere else instead of re-finding the crash — and the same holds for a deadlock. The Session already tells the colony at the end of a run that really suffered a catastrophe (a crash post-mortem taken or attempted, or a run stranded in a deadlock), via `AntColony::depositRepel`, the back-propagating hook for "callers with their own knowledge". Two scenario campaigns in `tests/tst_session.cpp` now pin what that buys (`afterACrashTheAntsKeepTheCampaignProductive`, `afterADeadlockCrashTheAntsDoTheSame`), on a region model: a one-input way into a `boom` error marking that demands two visits and may crash the SUT for a post-mortem each time (`targetHits = 2, crashDump = Crash, maxDumps = 2`), next to two safe two-input corridors; the deadlock twin uses a true sink deadlock. With the colony, run 1 finds the catastrophe — one input, the way in is marked repellent — and run 2, the research window while dump #1 is being analysed, covers the six corridor edges and only then delivers the second, policy-mandated hit. Without the colony, run 2 walks straight back in (the tie between the covered, still-sought catastrophe path and the fresh corridor edges falls to the lower transition index): no new coverage, and dump #2 — or a second hang — of the same fault before anything else was tested. A true sink deadlock never produces the run-time Deadlock outcome (the suggester runs out of work while the SUT hangs, so the run ends *stranded*, `rep.stuck`, before any quiescence report could name a deadlock; no post-mortem is taken and the visit itself credits the deadlock target) — which is exactly why the stuck-in-deadlock deposit exists. The scenario is tuned so the catastrophe sits exactly one input deep: covered-and-still-sought it ties with the fresh corridor edges, and only the pheromone decides — `pheromoneRepelWeight = 12` sits in the window where fresh corridors beat the marked way in, yet the catastrophe wins again as soon as the corridors are covered (its best falls back to `1 + cost = 1` while a re-walked corridor costs `1 + 3` through covered edges). The colony's deadlock campaign finishes in 2 runs, the colony-less one in 3.
 - **Bad pheromones priced by the way in.** An error state — deadlock, livelock, SUT crash — deserves worse pheromones the more time it takes to reach it: a repeat visit pays the way in again, and for a given SUT the wall-clock time of that way grows with the number of inputs on it, the quantity a run can measure reproducibly (the run's own wall-clock duration is not reproducible, so it must not steer). The Session's real-run catastrophe deposits (a crashed SUT, or a run stranded in a deadlock) are now priced by `AntConfig::catastropheDeposit(stimuli)`:
 
@@ -291,9 +291,9 @@ Tested in `tests/tst_session.cpp` (`theRebuildReplaysWhatTheRunTaught`: the rank
 
 `src/io/PnmlLoader.{h,cpp}` reuses the JSON loader's `LoadResult`/`LoadIssue` reporting and brings a minimal, dependency-free XML reader (namespace prefixes stripped, the five predefined entities plus numeric character references, CDATA, comments, processing instructions, a DOCTYPE with internal subset; malformed XML becomes errors). Like the JSON loader it collects every problem in one pass and produces a net only when there are no errors.
 
-**The mbt conventions.** A transition's `<toolspecific tool="mbt" kind="controllable|observable|internal" label="...">` sets kind and SUT label (other tools' toolspecifics are ignored silently). A milestone is tagged as a *second* toolspecific so it composes with the kind in any order: `<toolspecific tool="mbt" kind="milestone" rank="2"/>` (rank ≥ 1, default 1). Without any toolspecific, the transition id's first byte decides as a fallback: `?` → controllable, `!` → observable, anything else → internal **silent** (the id is never used as a label by accident). A controllable or observable transition without a label falls back to its id, stripped of a prefix. Per-place `<initialMarking>`s are **unioned into one initial marking** named after the net; `<capacity>` and place toolspecifics draw warnings, because PNML here yields **no bounds and no target or error markings** — declare those in the JSON form if needed.
+**The eggembt conventions.** A transition's `<toolspecific tool="eggembt" kind="controllable|observable|internal" label="...">` sets kind and SUT label (other tools' toolspecifics are ignored silently). A milestone is tagged as a *second* toolspecific so it composes with the kind in any order: `<toolspecific tool="eggembt" kind="milestone" rank="2"/>` (rank ≥ 1, default 1). Without any toolspecific, the transition id's first byte decides as a fallback: `?` → controllable, `!` → observable, anything else → internal **silent** (the id is never used as a label by accident). A controllable or observable transition without a label falls back to its id, stripped of a prefix. Per-place `<initialMarking>`s are **unioned into one initial marking** named after the net; `<capacity>` and place toolspecifics draw warnings, because PNML here yields **no bounds and no target or error markings** — declare those in the JSON form if needed.
 
-The CLI recognises the format by the first non-space byte of the file (`<` means XML, i.e. PNML; anything else goes to the JSON loader as before), `mbt check --help` says so, and a pre-existing duplicated `--strict` help line was removed while touching that text. `examples/coffee-pnml.pnml` is the shipped example: five transitions with the conventions above, a rank-2 milestone, an inhibitor arc, the `?`-prefix fallback — and a `switch_off` transition that consumes the brewing state and the lamp token, because with no target markings to declare, a net that is one big cycle would have every move vetoed as a livelock of the specification.
+The CLI recognises the format by the first non-space byte of the file (`<` means XML, i.e. PNML; anything else goes to the JSON loader as before), `eggembt check --help` says so, and a pre-existing duplicated `--strict` help line was removed while touching that text. `examples/coffee-pnml.pnml` is the shipped example: five transitions with the conventions above, a rank-2 milestone, an inhibitor arc, the `?`-prefix fallback — and a `switch_off` transition that consumes the brewing state and the lamp token, because with no target markings to declare, a net that is one big cycle would have every move vetoed as a livelock of the specification.
 
 Tested in `tests/tst_pnml.cpp` (new suite, 21 tests: XML noise, conventions, fallbacks, inhibitor arcs and weights, the marking union, every reported problem, the shipped example, and a session campaign driven by an imported model) and `cli_test.sh` (`pnml-model`: `check` names the model and its 5 transitions, `--strict` passes, `run --simulate` reaches `coverage complete` with `transitions 5 of 5` and `milestone transitions 1`).
 
@@ -301,7 +301,7 @@ Tested in `tests/tst_pnml.cpp` (new suite, 21 tests: XML noise, conventions, fal
 
 > 7. A reference agent shim for C++ SUTs.
 
-`examples/agents/ref_agent.cpp` shows the whole path for a hand-written C++ SUT: a plain `CoffeeMachine` state machine (it knows nothing about Petri nets or the protocol), an `ISutPlugin` wrapper that drives it (`RefSutPlugin`), and `AgentServer` over `FdTransport`/stdio as the agent `mbt-ref-agent`. Its header comment doubles as the checklist for wrapper authors: map each named initial marking of the model to a real SUT state (`startRun`), acknowledge exactly the inputs handed over (`stimulate` → `Stimulated`), report every model-relevant SUT move in capture order with millisecond timestamps (`Observed`), push **one** `Quiescent` per quiet stretch from a clock-bearing thread, be honest in `capabilities()` about what `postMortem` can do, and stop pushing events after `stopRun`. The model it serves is `examples/agents/coffee.json`; CMake builds it as the `ref-agent` target and hands it to `cli_test.sh` as `REF_AGENT`, whose `reference-agent` scenario runs `mbt run examples/agents/coffee.json --agent "$REF_AGENT" --quiescence 40` to coverage complete (skipped when the variable is unset, for manual runs).
+`examples/agents/ref_agent.cpp` shows the whole path for a hand-written C++ SUT: a plain `CoffeeMachine` state machine (it knows nothing about Petri nets or the protocol), an `ISutPlugin` wrapper that drives it (`RefSutPlugin`), and `AgentServer` over `FdTransport`/stdio as the agent `eggembt-ref-agent`. Its header comment doubles as the checklist for wrapper authors: map each named initial marking of the model to a real SUT state (`startRun`), acknowledge exactly the inputs handed over (`stimulate` → `Stimulated`), report every model-relevant SUT move in capture order with millisecond timestamps (`Observed`), push **one** `Quiescent` per quiet stretch from a clock-bearing thread, be honest in `capabilities()` about what `postMortem` can do, and stop pushing events after `stopRun`. The model it serves is `examples/agents/coffee.json`; CMake builds it as the `ref-agent` target and hands it to `cli_test.sh` as `REF_AGENT`, whose `reference-agent` scenario runs `eggembt run examples/agents/coffee.json --agent "$REF_AGENT" --quiescence 40` to coverage complete (skipped when the variable is unset, for manual runs).
 
 The scenario caught a real wrapper bug during development: the machine stayed in its brewing state after serving while the model says the serve returns to the idle place — tracker and machine diverged, and later inputs were ignored (a `no output arrived` deviation). The lesson is now part of the example's documentation: a wrapper's SUT state must land exactly where the model says the reported step leaves it.
 
@@ -324,7 +324,7 @@ With this batch, **§12 is closed**: item 1 was void (§13, no Qt parts in this 
 
 ### Item 2: coverage and backtraces, as a textual report
 
-The GUI half of item 2 was this batch's open question — a GUI in a Qt-free, zero-dependency tree — and the decision was Egge's: *"Scratch the idea of a GUI. A textual report is fine."* So the view the item asks for — coverage **and backtraces** — ships as text: `mbt report` keeps its coverage sections and gains a **Backtraces** section.
+The GUI half of item 2 was this batch's open question — a GUI in a Qt-free, zero-dependency tree — and the decision was Egge's: *"Scratch the idea of a GUI. A textual report is fine."* So the view the item asks for — coverage **and backtraces** — ships as text: `eggembt report` keeps its coverage sections and gains a **Backtraces** section.
 
 For every definitely covered transition, it prints the chain of moves that led into the **first definite visit** of the transition's earliest covered edge, oldest first — the way the campaign first got there. The chain starts at the named initial marking the run began from (`start > coin.insert > button.coffee > coffee.served`); a step whose exact edge is not certain — an ambiguous stretch the run certainly took, but whose edge the observations cannot pin down — renders as `...`, with a legend line when one occurs; a transition whose visits are all transition-level (observed certainly, but never on one certain edge) says so instead of guessing a chain. Silent internal steps appear under their id, since they have no label. Per-state and per-edge traces (first and last visit, arbitrary depth caps) remain available through the existing API (`CoverageDb::stateBacktrace` / `edgeBacktrace`); the report picks the first visit of each transition because "how did the test first get here" is the question a report answers. Tested in `cli_test.sh` (`run-log-continues-and-reports` now checks the section and a chain).
 
@@ -489,7 +489,7 @@ A crash nobody predicted (**implicit**) starts from the neutral prior p0 = 0.5 a
 - **Attribution order at the death**: the last credited step's transition (its prediction, if any) → a predicted marking the SUT was certainly in → the implicit entry on the last credited step's transition → nothing ("the SUT died without a credited step: the crash cannot be attributed", the old catastrophe behavior).
 - **The target board** folds the entries in: while an entry seeks, its place is a goal like any sought target (a predicted marking keeps its place a goal even when the marking itself is satisfied); deterministic and exhausted entries leave the board — their catastrophe repel takes over; unobserved entries teach nothing.
 - **The simulated SUT** gains the two knobs the tests needed: `--sim-crash-after N` dies after N events wherever it is (the seed of an implicit entry), and predicted crashes on *controllable* transitions are seeded automatically — the simulator looks up every labeled controllable transition with a prediction and dies handling that stimulus with the prediction's prior mean, reproducibly under `--sim-seed` (its dice are `rng_() >> 11 / 2^53 < p`, per run reseeded `opt_.seed + generation_`; p = 1.0 always dies). Marking predictions cannot be seeded this way: the simulator only dies at a stimulus it handles.
-- **The report.** After the run lines, a `Crash predictions` block names the credibility level and the implicit budget and lists every entry (site, prediction word — with `p=`/`attempts=` when explicit —, status, attempts, crashes, dumps). The campaign `--json` always carries `crash_level`, `crash_attempts` and `crash_predictions` (key, prediction, status, attempts, crashes, dumps) so the schema does not depend on the model. `mbt report` prints the same block from a run log.
+- **The report.** After the run lines, a `Crash predictions` block names the credibility level and the implicit budget and lists every entry (site, prediction word — with `p=`/`attempts=` when explicit —, status, attempts, crashes, dumps). The campaign `--json` always carries `crash_level`, `crash_attempts` and `crash_predictions` (key, prediction, status, attempts, crashes, dumps) so the schema does not depend on the model. `eggembt report` prints the same block from a run log.
 - **The CLI**: `--crash-level L` (0.5..1.0, default 0.95) and `--crash-attempts N` (1..1000000, default 6) — the two knobs of the experiment; `--sim-crash-after N` (0 = never) on the simulator.
 
 ### `--credits`
@@ -502,7 +502,7 @@ followed by:
 
 > Indent the --credit lines with 4 spaces instead of one. Show GLM credits on it own line, starting with "    Software written by artificial intelligence:"
 
-`mbt credits` and `mbt --credits` both print, byte for byte:
+`eggembt credits` and `eggembt --credits` both print, byte for byte:
 
     Egge Model Based Tester
         Designer: Esa Kettunen
@@ -599,7 +599,7 @@ An ambiguous stretch fires nothing while it is ambiguous. But a hooked transitio
 
 A **synchronous** command blocks the run loop while it runs; the SUT's own events queue up meanwhile and are processed when the command is done — nothing is lost. Its stdout+stderr is captured through a pipe into the record, cut at 4096 bytes (a spent capture budget appends one line `[output truncated]`). The bound is `--hook-timeout S` (1..3600, default 60): a command still running at its deadline is killed (`SIGKILL`), its record says `timeout`, and the run notes it.
 
-An **asynchronous** command is fire-and-forget: mbt does not wait for it and never kills it; its output goes to /dev/null and its record says `launched` with no exit. At session destruction the children that already ended are reaped (no zombie lingers in the process table); the ones still running are orphaned to init, which reaps them.
+An **asynchronous** command is fire-and-forget: eggembt does not wait for it and never kills it; its output goes to /dev/null and its record says `launched` with no exit. At session destruction the children that already ended are reaped (no zombie lingers in the process table); the ones still running are orphaned to init, which reaps them.
 
 The record's status words: `ok` (exit 0), `failed` (a non-zero exit; or killed by a signal of its own; or the fork/pipe failed before any child existed), `timeout` (killed at the bound), `launched` (async, no exit known — the record's exit holds −1, `kHookNoExit`). Every failure is a note and nothing else — Egge's "Note only, run continues" (the notes appear under the run line in the console; the hook records themselves survive a restore, the notes of a live run do not round-trip):
 
@@ -610,14 +610,14 @@ The record's status words: `ok` (exit 0), `failed` (a non-zero exit; or killed b
 
 ### The environment of a command
 
-The command line runs through `sh -c` in mbt's working directory, with the inherited environment plus four variables — the model's data is never interpolated into the command line itself:
+The command line runs through `sh -c` in eggembt's working directory, with the inherited environment plus four variables — the model's data is never interpolated into the command line itself:
 
 | variable | value |
 |----------|-------|
-| `MBT_TRANSITION` | the transition's id |
-| `MBT_TRANSITION_LABEL` | its label (may be empty) |
-| `MBT_RUN` | the run's id within the campaign (0 for the first run) |
-| `MBT_LOG` | the open run log's path (`--log`); absent when there is none |
+| `EGGEMBT_TRANSITION` | the transition's id |
+| `EGGEMBT_TRANSITION_LABEL` | its label (may be empty) |
+| `EGGEMBT_RUN` | the run's id within the campaign (0 for the first run) |
+| `EGGEMBT_LOG` | the open run log's path (`--log`); absent when there is none |
 
 ### The guard: `when`
 
@@ -636,10 +636,938 @@ Three views on one feature:
 ### The tests
 
 - `tests/tst_jsonnetloader.cpp` (+3, now 38): `commandKeyFormsAreParsed` (the shorthand, the full object, `"times": 1` as "once"), `commandValuesAreValidated` (an unknown mode word, `times` 0, an unknown guard place, an empty command line in both spellings — the object form's error names `run` —, a missing `run`, a non-string value, unknown keys inside the object warned), `commandNeedsVisibleStep` (the untraced internal rejected, a traced internal accepted).
-- `tests/tst_session.cpp` (+8, now 49): `commandHooksRunSyncAndReportFailures` (stdout and stderr captured, exit 3 is a `failed` record plus the byte-exact note, the run completes), `commandHookBudgetLimitsExecutions` (a self-loop under a 12-event cap: exactly two executions in run 1, none in run 2 — the budget is the campaign's), `commandHookGuardReadsTheBeliefAfterTheStep` (two guarded hooks share one command that appends its own transition id; only the hook whose guard holds after its step ran), `anAsyncCommandHookIsLaunchedNotWaited` (`launched`, no exit, the child still writes its marker after the campaign returned), `aTimedOutSyncHookIsKilledAndNoted` (`--hook-timeout 1` against `sleep 30`: `timeout`, the note, the run completes), `aRuledOutSuspectCommandIsReported` (an ambiguous stretch resolved against the hooked transition: no execution, the ruled-out note), `restoredRunsAdoptHookRecordsWithoutReexecuting` (the marker file gains exactly one line live; the restore re-adopts the record without a second line), `commandHooksReceiveTheirContext` (the four environment variables, `MBT_LOG` only when a log is open).
+- `tests/tst_session.cpp` (+8, now 49): `commandHooksRunSyncAndReportFailures` (stdout and stderr captured, exit 3 is a `failed` record plus the byte-exact note, the run completes), `commandHookBudgetLimitsExecutions` (a self-loop under a 12-event cap: exactly two executions in run 1, none in run 2 — the budget is the campaign's), `commandHookGuardReadsTheBeliefAfterTheStep` (two guarded hooks share one command that appends its own transition id; only the hook whose guard holds after its step ran), `anAsyncCommandHookIsLaunchedNotWaited` (`launched`, no exit, the child still writes its marker after the campaign returned), `aTimedOutSyncHookIsKilledAndNoted` (`--hook-timeout 1` against `sleep 30`: `timeout`, the note, the run completes), `aRuledOutSuspectCommandIsReported` (an ambiguous stretch resolved against the hooked transition: no execution, the ruled-out note), `restoredRunsAdoptHookRecordsWithoutReexecuting` (the marker file gains exactly one line live; the restore re-adopts the record without a second line), `commandHooksReceiveTheirContext` (the four environment variables, `EGGEMBT_LOG` only when a log is open).
 - `tests/tst_runlogio.cpp` (+1, now 8): `hookRunsRoundTrip` (three records — `ok` with captured output, `timeout` at exit −1, `launched` async — round-trip through the log unchanged).
-- `cli_test.sh` (+1 scenario, now 33): `command-hooks` (a sync `printf` hook's output in the table, an async `true` hook as `launched`, the Guidance line `commands: 2 transition(s), timeout 60 s`, the json keys, `--hook-timeout 0` rejected with the bounds in the message, `--hook-timeout 2` reflected in the Guidance line, and `mbt report` over the log showing the same table).
+- `cli_test.sh` (+1 scenario, now 33): `command-hooks` (a sync `printf` hook's output in the table, an async `true` hook as `launched`, the Guidance line `commands: 2 transition(s), timeout 60 s`, the json keys, `--hook-timeout 0` rejected with the bounds in the message, `--hook-timeout 2` reflected in the Guidance line, and `eggembt report` over the log showing the same table).
 
 The suite stands at **16 CTest entries** — 15 unit suites (`tst_session` 49 tests, `tst_jsonnetloader` 38, `tst_runlogio` 8 with the hook-records round-trip) plus `cli_test.sh` (33 scenarios) — all green. Build and check with:
 
     cmake -S . -B build -G Ninja && cmake --build build && ctest --test-dir build
+
+## 19. Update: 18 November 2026 (DeepSeek V4.1 Flash)
+
+This batch is two things: the project has a new name, and the SUT can now be
+**held at an event until the tracker has acknowledged it**. The second is
+Egge's *synchronized events*: a fast SUT may run so far ahead that a snapshot
+taken for an error transition no longer shows the stack the event left behind;
+synchronizing the two sides trades speed for control. All changes are marked
+`DeepSeek V4.1 Flash` in the source; help text and runtime output stay signature-free
+(the one exception remains `--credits`).
+
+### Egge's assignment, verbatim
+
+Egge wrote (byte-exact):
+
+> I added the project to git and github. After each session, do "git add" for every updated file. I'll be doing the git commits and pushes myself. I changed the name of the project to "Egge's Model-Based Tester", abbreviated "eggembt". Yet another feature: We need an option to synchronize the communication between the SUT and the tracker such that having sent the transition information to the tracker the SUT can only continue after having received an ACK from the tracker. This will slow down the SUT but there will also be more control e.g. in the case of error transitions where you need to be able to make a copy of the stack (which would be inaccurate/misleading if the program is running wild). Another feature: Make the synchronized event an option for named transitions.
+
+Five questions went out with the fixed design; five answers came back
+(byte-exact as stored):
+
+| the question | Egge's answer |
+|--------------|---------------|
+| How far does the rename reach? | **"Docs and titles (Recommended), CMake project name (Recommended), Credits first line (Recommended), The mbt command itself, MBT_* prefix"** |
+| Which transitions may be synchronized? | **"Only the SUT's own moves"** |
+| How is it spelled in the model? | **""sync": true (Recommended)"** |
+| Per transition only, or a campaign switch too? | **"Per-transition and also master switch, default off"** |
+| What if the plug-in cannot acknowledge? | **"Please explain why it could not? Okay, note and continue."** |
+
+The answers in the tool's terms:
+
+1. **The rename reaches the docs, the titles, the CMake project, the credits'
+   first line, the command and the `MBT_*` prefix** — nothing else; the
+   library targets and one macro keep their old names (below).
+2. **Only the SUT's own moves.** A synchronized event is an observable step or
+   a traced internal one. A controllable transition is rejected: its stimulus
+   is acknowledged as a `stimulated` event already, so there is nothing left to
+   hold. An invisible internal step is rejected too: the tester never sees it.
+3. **`"sync": true`**, per transition, default false.
+4. **Both.** The model opts in per transition and the campaign opts in as a
+   whole with `--sync-events` (default off); synchronization happens only when
+   both agree.
+5. **Explain and continue.** A plug-in that cannot acknowledge does not stop
+   the campaign; the run is simply unsynchronized, and a note says exactly why
+   (once per campaign).
+
+### The rename
+
+The product is **Egge's Model-Based Tester**, abbreviated **`eggembt`** — also
+the binary, the command in every example, and the CMake project name. What
+changed:
+
+- `project(eggembt)`, target `eggembt`, `EGGEMBT_VERSION`;
+- every `eggembt` invocation in the docs, examples and `cli_test.sh` (`EGGEMBT=`);
+- the env prefix `MBT_*` → `EGGEMBT_*`: `EGGEMBT_VERSION`, and the hooks'
+  `EGGEMBT_TRANSITION`, `EGGEMBT_TRANSITION_LABEL`, `EGGEMBT_RUN`,
+  `EGGEMBT_LOG`;
+- the agent names (`eggembt-agent`, `eggembt-agent-sim`, `eggembt-ref-agent`)
+  and the tests' temp-directory prefix;
+- the credits' **first line**, now `Egge's Model-Based Tester` in
+  `src/main.cpp`, `README.md` and the `cli_test.sh` pin. That line supersedes
+  the §17 render above; §17's quoted texts are Egge's own and stay byte-exact,
+  as does the indented render there (history, not documentation of the current
+  output).
+
+What did **not** change, deliberately: the library targets `mbt_engine`,
+`mbt_core`, `mbt_agent` and the macro `MBT_POSIX_IO`. They are internal names;
+renaming them would churn every build file for no reader's benefit.
+
+Two **format tags** changed with backward compatibility, so old files keep
+loading:
+
+| format | new tag | still accepted |
+|--------|---------|----------------|
+| PNML toolspecific | `tool="eggembt"` | `tool="mbt"` |
+| run log header | `"format":"eggembt-runlog"` | `"format":"mbt-runlog"` |
+
+The run-log reader now says "not an eggembt run log" when neither matches.
+
+### The `sync` key
+
+    "sync": true        hold the SUT at this transition's event until the tracker acks it
+
+The loader's rules follow Egge's "Only the SUT's own moves": a controllable
+transition is an error ("a synchronized event must be the SUT's own move: a
+controllable transition is acknowledged as a stimulus already"), and so is an
+invisible internal step ("a synchronized event must be visible to the tester:
+give it a label and \"traced\": true (or make it observable)"). The value must
+be a boolean. `NetBuilder::sync(t)` is the programmatic spelling.
+
+The campaign switch is **`--sync-events`** (default off). With it off the key
+is inert — the model may carry it, the run does not hold. The Guidance block
+names the state whenever the model marks any:
+
+    sync: 2 transition(s), held until acknowledged (--sync-events)
+    sync: 2 transition(s), not held (no --sync-events)
+
+and the campaign `--json` always carries `sync_events` (the switch) and
+`sync_transitions` (how many the model marks).
+
+### Holding, and what the ack waits for
+
+The event travels with the ack requirement: `EventQueue::push(..., needsAck)`
+sets `SequencedEvent::needsAck`, and a pump step reports
+`PumpResult::lastNeedsAck` / `lastAckSeq`. The Session then
+
+1. stops pumping at the held event (nothing after it can be captured yet),
+2. handles every consequence of that event — including a post-mortem, which
+   must see the stack frozen; that is the whole point of the feature,
+3. acknowledges **after** those reactions and **before** the
+   `maxEventsPerRun` check, so an error transition's dump happens first and the
+   SUT only then moves on.
+
+A run that ends while the SUT is held does not ack: `stop_run`, `shutdown` or
+the closing connection releases the SUT instead, so it can always be stopped
+or restarted. A synthetic burst (`burstAtStart`) is never held — nothing could
+ack it before the run has begun.
+
+The plug-in side is `ISutPlugin::acknowledgeEvent(queueSeq)`, a no-op by
+default; the capability is `PluginCapabilities::eventAcks`, the labels travel
+as `PluginRunOptions::syncLabels`. The simulated SUT holds its worker thread on
+a condition variable while it waits, releases the mutex meanwhile, lets `halt()`
+wake it, and counts what happened (`acknowledgements()`, `holding()`,
+`dumpSawHeldEvent()` — the last says a post-mortem really saw the held stack).
+
+### The wire protocol
+
+Protocol version stays **1**: every addition is capability-gated and unknown
+fields are ignored, so an old agent and an old tracker still talk.
+
+| direction | message | addition |
+|-----------|---------|----------|
+| agent → tracker | `hello` | `"sync": true` — the agent can hold the SUT at an event |
+| tracker → agent | `start_run` | `"sync_labels": [...]` — the run's synchronized labels |
+| agent → tracker | `event` | `"seq": N` (per-run number), `"sync": true` (the SUT is held) |
+| tracker → agent | `ack` | `{"type":"ack","run":N,"seq":M}` — handled, go on |
+
+`AgentServer` numbers every event of a run and maps the wire sequence back to
+the plug-in's queue sequence for `acknowledgeEvent()`; `RemotePlugin` maps the
+queue sequence forward to the wire sequence before sending the ack, and drops
+the map when the run ends. `docs/PLUGIN_PROTOCOL.md` has the line-by-line
+example.
+
+### A plug-in that cannot acknowledge
+
+Capability-gated, and honest about it: the note is
+
+    the plug-in cannot acknowledge events (its capabilities do not offer "sync"):
+    the synchronized events are not held, the run is not synchronized
+
+written once per campaign (`syncNoteGiven_`), not once per run. The campaign
+goes on unsynchronized; the switch and the key stay as they are, so nothing in
+the model or the report pretends otherwise.
+
+### The tests
+
+- `tests/tst_jsonnetloader.cpp` (+2, now 40): `syncKeyIsParsed` (observable,
+  traced internal and plain transitions side by side), `syncKeyIsRejectedWhereItDoesNotApply`
+  (controllable, invisible internal, non-boolean value).
+- `tests/tst_session.cpp` (+4, now 53): `aSynchronizedEventHoldsTheSutUntilTheAck`
+  (one held output, one acknowledgement, nothing left holding),
+  `withoutTheSwitchNothingIsHeld` (same model, switch off), `thePostMortemSeesTheHeldStack`
+  (a snapshot dump on a synchronized error transition: the dump ran while the
+  SUT stood still, the ack came after), `aPluginThatCannotAckIsNoted` (the note,
+  its once-per-campaign behaviour, nothing held).
+- `tests/tst_remote.cpp` (+2, now 19): `synchronizedEventsTravelOverTheProtocol`
+  (hello capability, wire seq, ack back to the SUT), `anAgentWithoutTheAckCapabilityIsNoted`,
+  plus codec round-trips for the four additions above.
+- `cli_test.sh` (+1 scenario, now 34): `sync-events` (the held and unheld
+  Guidance lines, the simulated SUT and the agent-sim path, the two `--json`
+  keys).
+
+The suite stands at **16 CTest entries** — 15 unit suites (`tst_session` 53
+tests, `tst_jsonnetloader` 40, `tst_remote` 19) plus `cli_test.sh` (34
+scenarios) — all green. Build and check with:
+
+    cmake -S . -B build -G Ninja && cmake --build build && ctest --test-dir build
+
+## 20. Update: 18 November 2026 (DeepSeek V4.1 Flash)
+
+Two small corrections to §19, both from Egge: the version was premature, and
+the AI credits gained a line.
+
+### Egge's assignment, verbatim
+
+> Retract the version to the current git branch, given by e.g. git status. No, create a new header file and update it there. Add DeepSekk V4.1 Flash as an AI credit under --credits-
+
+### The version follows the branch
+
+§19 had left `set(EGGEMBT_VERSION "1.0.0")` in the CMake project. The tree is
+on the git branch `v0.0.1` (as `git status` says), so `1.0.0` claimed more than
+exists. The number now lives in **`src/Version.h`** and nowhere else:
+
+    #define EGGEMBT_VERSION "v0.0.1"
+
+`src/main.cpp` and `src/cli/Commands.cpp` include that header; CMake no longer
+sets the macro (`target_compile_definitions` is gone, and the header is listed
+in the `eggembt` sources so it shows up in IDEs). `eggembt version` prints
+`eggembt v0.0.1`, and the usage header starts the same way. Bumping the version
+means editing one line when the branch moves — and the `version` scenario in
+`cli_test.sh` pins it (`^eggembt v0[.]0[.]1$`), so a forgetful bump fails
+loudly instead of drifting.
+
+### The new credit line
+
+The credits gain a sixth line, after DeepSeek V4.1 Flash:
+
+    Egge's Model-Based Tester
+        Designer: Esa Kettunen
+        Copyright (c) Esa Kettunen 2026
+        Software written by artificial intelligence: Claude Sonnet 5.5 Medium
+        Software written by artificial intelligence: DeepSeek V4.1 Flash
+        Software written by artificial intelligence: DeepSeek V4.1 Flash
+
+Egge's message spells the name "DeepSekk"; the credit uses the model's own
+spelling, **DeepSeek V4.1 Flash**, like the other AI lines — a name, not prose.
+The `credits` scenario pins the line (and the others) byte for byte, and the
+`README.md` render now matches. This supersedes the credit renders in §17 and
+§19; their quoted texts stay byte-exact history.
+
+### The tests
+
+No new test files, no new scenarios: the `version` pin and the `credits` line
+were updated in place in `cli_test.sh`. The suite remains **16 CTest entries**
+(`tst_session` 53, `tst_jsonnetloader` 40, `tst_remote` 19) plus `cli_test.sh`
+(34 scenarios) — all green:
+
+    cmake -S . -B build -G Ninja && cmake --build build && ctest --test-dir build
+
+## 21. Update: 18 November 2026 (DeepSeek V4.1 Flash)
+
+The campaign is no longer a black box once it ends. Three inspection views
+read what the recording holds — the traces a run walked, the coverage per
+state and edge, and the pheromone that steered the ants — and a fourth
+paints the graph with that coverage. None of them changes the recording: the
+traces come from the log's own steps, and the pheromone is rebuilt from them.
+
+### The traces of a campaign
+
+`report --runs` prints every run's recorded steps, oldest first:
+
+    Traces  (the recorded steps of every run, oldest first)
+      run 1   sut_crashed   atm-lobby > card.insert > card.read > pin.enter > pin.accepted > withdraw.request > db.down
+      run 2   sut_crashed   atm-drivein > card.insert > bank.stolen_report > card.confiscated
+      run 3   completed     atm-branch > card.insert > card.read > pin.enter > pin.rejected > ...
+
+A long run keeps its **last 20 steps** behind a `>`-chain that starts with
+`...` and ends with `[N steps]`; a step prints its label, or its id when it
+has none. `report --trace N` prints one run in full, with the run's detail
+(the error or crash note) in parentheses:
+
+    Traces  (run 2, oldest first)
+      run 2   sut_crashed   atm-drivein > card.insert > bank.stolen_report > card.confiscated  (error transition 'confiscate': the SUT was crashed for a po...)
+
+The source is `PersistedRun::transitions` — the transition ids the log
+recorded — and for an event run, which records no path, its `events` (each
+event's label, or `[kind]`). Nothing is re-simulated: a trace shows what was
+recorded, which is exactly what an after-the-fact inspection wants. An
+out-of-range request is not an error: `--trace 99` on a four-run log prints
+`the log has 4 run(s), no run 99` and exits 0. `--trace 0` is a usage error
+(the range is 1..1000000), because 0 would silently mean something other than
+"no such run".
+
+### Coverage per element
+
+`--coverage-elements` on `run` or `report` adds two arrays to the `--json`
+report, under `coverage`:
+
+- `coverage.states[]` — per known marking: `marking`, `definite`,
+  `ambiguous`, `covered`, and (when reached) `first_run`/`last_run`;
+- `coverage.edges[]` — per known edge: `from`, `transition`, `label` (when
+  the transition has one), `to`, and the same four counters.
+
+`covered` is the campaign's own rule — `definite >= --threshold` — and the
+run numbers are 1-based, so they index the same runs `--runs` lists. `definite`
+counts the visits that lie on the one known path; `ambiguous` keeps what only
+possibly happened during an ambiguous stretch (§4), so a reader can tell
+"visited" from "may have visited" without guessing. The default report stays
+compact: a large graph turns this into a big file, and most readers only want
+the summary. The arrays are sorted by graph order, which is deterministic for
+a given model.
+
+### The graph, coloured by coverage
+
+`report --dot FILE` now writes the same Graphviz drawing `explore --dot` does,
+but coloured by what the campaign reached:
+
+| colour | pen width | meaning |
+|--------|-----------|---------|
+| `#2e7d32` green | 3 | `definite >= threshold` — covered |
+| `#66bb6a` light green | 1 | visited, below the threshold |
+| `#f0a000` orange | 1 | `ambiguous > 0` only — possibly visited |
+| `#9e9e9e` grey | 1 | known, never visited |
+
+The drawing carries a legend line, so a graph that travels without this text
+still explains itself. `explore --dot` keeps its plain drawing: it runs before
+any campaign, so it has no coverage to show (it passes no database rather than
+an empty one). The 5000-state cap and its error message are unchanged.
+
+### The pheromone dump
+
+`--dump-pheromone FILE` on `run` writes the colony's pheromone after the
+campaign, and on `report` after the rebuild:
+
+    {
+      "model": "atm", "tlist": 4, "tau_max": 10, "iterations": 37, "ant_walks": 740,
+      "edges": [
+        {"from": "idle:1, cassette:2, tries:2", "transition": "insert_card",
+         "label": "card.insert", "to": "inserting:1, cassette:2, tries:2",
+         "attract": 0, "repel": 0.5007, "region": 0}
+      ],
+      "pairs": [
+        {"state": "confiscated:1, cassette:1, tries:2", "tlist": [2597307718, 78764499, ...],
+         "attract": 0, "repel": 2.6599}
+      ]
+    }
+
+The two channels are the ones of §7: `edges[]` is the per-edge layer with the
+static `region` (§12, item 5), `pairs[]` the (marking, T-list) store (§16),
+where `tlist` is the key in full. Everything is keyed by readable names —
+markings, transition ids, T-list elements — because **edge ids are
+session-local** and would point at nothing after a restart. `pairs[]` is empty
+with the layer off (`--tlist 0`, the default) and holds only entries whose
+evaporation has not yet fallen below the floor.
+
+The `AntColony::pairEntries()` view behind the dump is sorted by (state,
+list): the store is a hash map, whose order is not a contract, so sorting is
+what makes two dumps of the same state byte-identical.
+
+### Rebuilding the pair store
+
+The log records the campaign's steps, not its colony settings. A rebuilt
+session therefore starts with `--tlist 0`, and a `report --dump-pheromone`
+would show an empty pair store even when the campaign had one. `report` takes
+`--tlist N` for exactly this: give it the campaign's value and the rebuild
+fills the same pairs. On the smoke campaign below (`examples/atm.json`,
+4 runs, `--tlist 4`) the live dump and `report --tlist 4 --dump-pheromone`
+both hold the same three pair rows.
+
+A rebuild is an approximation, as §16 and `Session::rebuildPheromones` say: the
+recording carries the definite steps and the acknowledged events, so the
+rebuilt deposits are the milestone steps' and the catastrophe ends' at the
+campaign's `--restored-pheromones` percentage (default 50). That is visible in
+the dump: `iterations` and `ant_walks` are 0 on `report`, because the log does
+not record how many rounds the campaign ran — the edges and pairs are what the
+campaign taught, not a claim about its length.
+
+### Smoke test
+
+    eggembt run examples/atm.json --simulate --max-runs 6 \
+        --json run.json --coverage-elements --dump-pheromone ph.json
+    eggembt report examples/atm.json --log campaign.log --runs
+
+`run.json` then carries 117 `coverage.states[]` and 126 `coverage.edges[]`
+entries, and `ph.json` the same 126 edges with their channels (`pairs` empty at
+`--tlist 0`). With `--tlist 4` and four runs the dump holds three pair rows,
+which `report --tlist 4 --dump-pheromone` reproduces.
+
+### The tests
+
+- `tests/tst_ants.cpp` (+1 test, now 22):
+  `pairEntriesAreReadableAndSorted` — an empty store first, then two deposits,
+  the exact channels and lists, and the sort order. The two routes of that
+  model may converge on one marking, so a row is identified by its T-list;
+- `cli_test.sh` (+1 scenario, now 35): `inspection` — the run's `--json`
+  elements and the dump with its pairs and T-list, `--runs`, `--trace 1`,
+  `--trace 99`, the two usage errors, then `report --dot --coverage-elements
+  --tlist 4 --dump-pheromone`, checking the drawing's colours and legend and
+  that the rebuilt pair store is not empty. It also asserts that the dump
+  leaks no signature.
+
+The suite stands at **16 CTest entries** — 15 unit suites (`tst_session` 53
+tests, `tst_jsonnetloader` 40, `tst_remote` 19) plus `cli_test.sh` (35
+scenarios) — all green:
+
+    cmake -S . -B build -G Ninja && cmake --build build && ctest --test-dir build
+
+## 22. Update: 18 November 2026 (DeepSeek V4.1 Flash)
+
+Three follow-ups to §21: a cosmetic fix in the backtrace table, an audit of
+the pheromone and ant-colony documentation against the code, and the Jaccard
+index written out — the last one at Egge's request ("add some verbatim
+explanation on Jaccard").
+
+### The backtrace column
+
+The backtrace table padded every transition name to a fixed 16 characters.
+`bank.stolen_report` (18) overran it, so the ATM report read
+`bank.stolen_reportatm-drivein > card.insert ...` — a name glued to its
+chain. The column now follows the longest name printed (16 minimum) and gets
+one separator space on top, because `padRight` leaves a name that fills the
+column untouched:
+
+    Backtraces  (the way into the first definite visit of each covered transition, oldest first)
+      card.insert        atm-lobby > card.insert
+      bank.stolen_report atm-drivein > card.insert > open_session > connect_db > bank.stolen_report
+      card.read          atm-lobby > card.insert > open_session > connect_db > ... > card.read
+
+The `inspection` scenario in `cli_test.sh` pins the space
+(`bank.stolen_report atm-drivein > card.insert`), so a regression to the
+fixed width fails the suite. Nothing else about the table changed — the
+anchor rule, the `...` legend and the transition-level-only fallback stay as
+§18 described them.
+
+### The pheromone and colony documentation, checked against the code
+
+The colony's numbers were audited against `AntConfig` and
+`AntColony::weight()`: 20 ants per iteration, 40 steps per ant, a
+back-propagation depth of 5 (an enforced minimum) decaying by 0.7 per step,
+evaporation of 10 % (attract) and 2 % (repel), a ceiling of `tauMax` 10, a
+target deposit of 2.0, a milestone deposit of 1.5 × rank, a catastrophe
+deposit of 3.0 × (1 + 0.25 · min(stimuli, 8)), a static nontarget repel of
+1.0, `pEnvironment` 0.5 and an expansion budget of 200 states per round. All
+of these match what §16–§18 and the user manual claimed; two statements did
+not, and the user manual now states them exactly:
+
+- **The choice rule is written out.** §7.1 spoke of the attract channel
+  "lowering the weight's cost" and the repel channel "raising it", which reads
+  backwards unless one knows that the weight is a probability. The manual now
+  gives the formula the code uses,
+
+      weight(edge) = (attract + 0.1)^alpha · novelty^beta · exp(-lambda · (repel + region))
+      novelty      = 1 / (1 + hits)      (0.01 when the edge is saturated)
+      alpha = beta = lambda = 1          (the defaults)
+
+  and the two-step draw (between the SUT's own moves and the tester's inputs
+  at 0.5 each, then by weight inside the chosen pool).
+
+- **The novelty deposit sits at a state, not on an edge.** §7.1 said "edges
+  into states nothing has visited yet get a deposit of 1.0". What
+  `AntColony::arrive()` does: an ant standing where an uncovered edge leaves —
+  or on a state it cannot expand within the round's budget — deposits 1.0 at
+  *that state* and its walk ends; the deposit then back-propagates along the
+  way in. The per-edge `1/(1 + hits)` factor in the weight is a second,
+  separate thing. Both are now said separately.
+
+Two smaller corrections in the same pass: the manual's command list gained
+`credits` (the help text has carried it since the rename, §19), and its
+workflow step now points at the Jaccard section below. The early design
+overview's looser sentence — "one that reaches a target still being sought,
+or unexplored territory, marks the way in as attractive" — stays as history;
+it is true of where the deposit lands after back-propagation, but §7.1 is now
+the exact statement.
+
+### Jaccard's index, verbatim
+
+For two sets A and B of covered elements, the Jaccard index is
+
+    J(A, B) = |A ∩ B| / |A ∪ B| = |A ∩ B| / (|A| + |B| − |A ∩ B|)
+
+with `|X|` the number of elements in X. It is the fraction of the elements
+either side covered that both covered: 1 = the same set, 0 = nothing in
+common. Three sets are compared separately, never merged — transitions,
+states, edges — because a campaign can cover few transitions over a wide
+state space, or the other way round.
+
+What is in a run's sets (`OverlapAnalysis`, fed by `CoverageDb`):
+
+- **states** — every state the run definitely visited, the initial state
+  included;
+- **transitions** — every transition that certainly fired, including the
+  ambiguous stretches' credits (a transition certainly seen to fire, even
+  where the exact edge is not certain);
+- **edges** — every edge the run definitely traversed.
+
+Presence only: a state visited once and a state visited ten times are one
+element each, so the index does not drift with run length or visit counts. A
+run that covered nothing has an empty set. The conventions are pinned in
+`tests/tst_overlap.cpp`:
+
+    J(A, A) = 1                    every element is in both
+    J(∅, ∅) = 1                    0/0 is not computable; nothing = nothing
+    J(∅, B) = 0                    for a non-empty B
+    campaign sets = the union over its runs; the campaign index is J of those unions
+    mean_pairwise = mean over the n(n−1)/2 unordered pairs; 0 for fewer than two runs
+
+A worked example, transitions: A = `{insert_card, open_session, connect_db,
+reader_check}`, B = `{insert_card, open_session, connect_db, atm_fail}`;
+`|A ∩ B| = 3`, `|A ∪ B| = 5`, `J = 3/5 = 0.60`. And a real one, the ATM demo
+of §21 (a four-run log against a six-run log): campaigns 93 % / 80 % / 80 %,
+within the four-run log 49 / 8 / 6, within the six-run log 49 / 7 / 6, cross
+means 58 / 23 / 22 — per transitions, states, edges.
+
+What it is not: not a coverage measure (the `Coverage` block is), not the
+overlap coefficient `|A ∩ B| / min(|A|, |B|)` (which would call a small set
+inside a big one 100 %), and not frequency- or order-aware. The console
+rounds to whole percent; `--csv` and `--json` carry the exact values, and
+both are computed from the run logs, so a replay reproduces the live numbers
+exactly.
+
+### The tests
+
+No new suite entries: the backtrace assertion rides inside the `inspection`
+scenario. `tst_ants` stays at 22 tests, `cli_test.sh` at 35 scenarios, and
+the suite at **16 CTest entries** — all green:
+
+    cmake -S . -B build -G Ninja && cmake --build build && ctest --test-dir build
+
+## 23. Update: 18 November 2026 (DeepSeek V4.1 Flash)
+
+### The gap
+
+There was no installation documentation. `README.md` had a three-line "Build
+and test" block; §9 described the original code layout; nothing said what a
+user needs beforehand, how to check a build before trusting it, or where a
+finished build goes. Worse, the CMake project had no `install()` rules at
+all, so "install" had no defined meaning: copying `build/eggembt` by hand was
+the only route, and nothing said so.
+
+### The install rules
+
+`CMakeLists.txt` now includes `GNUInstallDirs` and installs the two programs
+into `${CMAKE_INSTALL_BINDIR}`:
+
+    install(TARGETS eggembt ref-agent RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+The product is the one command-line program; `ref-agent` travels with it
+because it is the quickest way to check a fresh install against a SUT without
+writing a wrapper. The internal static libraries (`mbt_engine`, `mbt_core`,
+`mbt_agent`) are deliberately not installed — nothing outside links against
+them — and there is no man page, shell completion or data payload to install:
+the examples stay in the source tree, and the binary never looks for files
+beside itself. So:
+
+    cmake --install build --prefix "$HOME/.local"
+    # -> $HOME/.local/bin/eggembt, $HOME/.local/bin/ref-agent
+
+with `/usr/local` as the default prefix. Verified by installing into a scratch
+prefix and running the installed binaries: `eggembt version` prints
+`eggembt v0.0.1`, a simulated campaign ends `coverage complete`, and
+`--agent ref-agent` (the installed shim, on `PATH`) passes the process
+boundary too.
+
+### `INSTALL.md`
+
+A new top-level guide, the one the question asked for. It covers:
+
+- **what you need** — CMake ≥ 3.16, a C++17 compiler, a thread library
+  (`find_package(Threads)`), Ninja optionally, a POSIX shell for `cli_test.sh`
+  only; and the platform split: on POSIX (`__unix__`/`__APPLE__`,
+  `MBT_POSIX_IO`) the process and socket transports exist, elsewhere only the
+  stream transport does, so `--simulate` and `--stdio` work and
+  `--agent`/`--connect`/`--listen` are refused with a message that says why;
+- **build** — the two-step configure/build with `-DCMAKE_BUILD_TYPE=Release`
+  recommended (a campaign is CPU-bound), and what lands in `build/`;
+- **test before installing** — `ctest --test-dir build` (16 entries) and the
+  standalone `cli_test.sh` invocation with `EGGEMBT`, `EXAMPLES` and
+  `REF_AGENT`, from the source tree, ending `35 tests, 0 failure(s)`;
+- **use from the build tree** — installation is optional, since the binary has
+  no data files to find;
+- **install** — `cmake --install build --prefix …`, the two files, `PATH`, and
+  the version (`src/Version.h`, following the branch);
+- **verify the install** — `version`, `check`, a simulated campaign, and the
+  reference-agent coffee campaign;
+- **where files are written** — the run log (with its own format version, so
+  an incompatible one is refused rather than misread), the `--json`/`--dot`/
+  `--dump-pheromone`/`--csv` outputs, and the post-mortem names: the tester
+  never writes a dump, the plug-in reports the names it produced, and the
+  built-in simulator only reports `dump-N.core`/`dump-N.snapshot` without
+  creating them. Nothing goes to `$HOME`; the `EGGEMBT_*` hook variables are
+  *set* for a command, never read from the environment;
+- **upgrading and removing** — rebuild and reinstall; delete two files to
+  remove;
+- **troubleshooting** — missing CMake/Ninja, `ctest` finding no tests, a
+  `cli_test.sh` run from the wrong directory, refused agent options on
+  non-POSIX builds, and an unoptimized default build type.
+
+`README.md`'s build section and its layout block now point at it, and the user
+manual's chapter 8 opens by saying it assumes `eggembt` is on `PATH` and
+defers the installation itself to `INSTALL.md`.
+
+### The tests
+
+No new test entries: the install path was verified by hand into a scratch
+prefix, and the suite is unchanged — **16 CTest entries** (`tst_ants` 22,
+`tst_session` 53, `tst_jsonnetloader` 40, `tst_remote` 19) plus
+`cli_test.sh` (35 scenarios), all green:
+
+    cmake -S . -B build -G Ninja && cmake --build build && ctest --test-dir build
+
+## 24. Update: 18 November 2026 (DeepSeek V4.1 Flash)
+
+### The lost ack: a Release-only flake
+
+`tst_remote`'s `synchronizedEventsTravelOverTheProtocol` failed 3–5 times in
+60 runs of a Release build and never in the unoptimized tree. The failure was
+always the same: `acknowledgements() == 1` saw `0`, `holding()` was already
+false, and the run itself ended normally (`coverage complete`). Adding a
+one-second wait in the test changed nothing, which ruled out "the ack is just
+late" and pointed at "the ack was never sent". Instrumenting both ends
+confirmed it: the tracker never produced an `ack` message at all, while the
+agent's run number, capabilities (`sync`) and the run's notes were all
+consistent — so the event was never *held* from the tracker's point of view,
+even though the SUT had pushed it as a synchronized one.
+
+The cause is an ordering gap on the tracker side of the wire. The agent's
+forwarder numbers a held event and registers which queue sequence its ack must
+wake *before* it sends, so that side is ordered:
+
+    // AgentServer::forward
+    m.seq = nextEventSeq_++;
+    m.syncEvent = e.needsAck;
+    if (e.needsAck)
+        ackSeqs_[m.seq] = e.seq;
+    send(m);
+
+The plug-in receiving it did the opposite:
+
+    // RemotePlugin::onLine -- before the fix
+    const bool pushed = queue->push(SutEvent{...}, &qseq, m.syncEvent) == ...;
+    std::lock_guard<std::mutex> lock(shared->mutex);
+    if (pushed && m.syncEvent && shared->events == queue)
+        shared->pendingAcks[qseq] = {m.run, m.seq};
+
+`queue->push()` is what wakes the Session thread, and the Session may pump the
+event, reach its ack block (`Session.cpp`, "let it go on") and call
+`acknowledgeEvent()` before the pushing thread has written `pendingAcks`. The
+lookup then found nothing, the function returned silently, and no ack ever
+went on the wire. The SUT stayed held; the run finished through the normal
+"coverage complete" suggestion, `stopRun()` released the SUT, and the test
+saw a completed run with no ack. A heuristic `sleep` in the test would only
+have widened the window, not closed it.
+
+### The fix
+
+`acknowledgeEvent()` now waits on the shared condition variable for the
+mapping that is provably coming, and treats the end of the run as the other
+way out:
+
+    shared_->changed.wait(lock, [&] {
+        return shared_->pendingAcks.count(queueSeq) > 0 || shared_->events == nullptr
+               || shared_->shuttingDown || !shared_->fault.empty();
+    });
+
+`onLine()` already notifies `changed` right after registering the mapping, so
+the ack is sent as soon as the mapping exists; `detachEvents()` now notifies
+as well (it used to clear `events` and wait for in-flight pushes without a
+wake-up, which would have left the new wait asleep until the process ended),
+so a run that ends first still releases the SUT through `stop_run` — the
+documented behaviour of a run that ends at a held event (§19), not a special
+case. Nothing is timed: the ack is either sent because its event was pushed
+and still belongs to a live run, or dropped because the run is over.
+
+The test is back to the direct assertion — the ack must be on the wire when
+`runOnce()` returns — so the window is pinned rather than papered over. The
+rig delivers lines synchronously, so this is deterministic once the ordering
+is right. Verified: **100/100** isolated Release runs of `tst_remote` and
+**40/40** in the development tree, then the full suites.
+
+### Warning cleanup
+
+A fresh Release build of the whole tree reported five warnings; all are gone
+without changing behaviour:
+
+- `src/io/PnmlLoader.cpp` — the helper `mbtSpecific()` had no callers (every
+  reader loops over `el.children` itself and accepts both the `eggembt` and
+  legacy `mbt` tool attribute), so it is removed; the compatibility note stays
+  where the parsing happens.
+- `tests/tst_ants.cpp` — the two step hashes were computed into `hx`/`hy` and
+  then recomputed for the cascade; the cascade now pushes the values it has.
+- `tests/tst_session.cpp` — `CrashPrediction{CrashClass::Always}` triggered
+  `-Wmissing-field-initializers`; the one field is now named.
+
+Both trees build warning-free with `-Wall -Wextra`.
+
+## 25. Update: 18 November 2026 (DeepSeek V4.1 Flash)
+
+### The question
+
+The ant colony and the pheromones have unit tests for their machinery
+(deposits, evaporation, back-propagation, determinism, the pair store), but no
+test showed that the guidance *buys* anything: nothing measured a campaign
+with the colony against the same campaign without it. Egge asked for that
+benchmark. This section describes the model, reports the measured numbers and
+explains the one finding that decides them: the edge channel alone changes
+nothing here, and the `(marking, T-list)` pair layer is what makes the
+difference.
+
+### The scenario
+
+A five-step corridor leads to a fork `F`; behind the fork lies the region the
+campaign has to cover, a ring of 1000 states with a skip edge (1008 states,
+2010 edges in all). The fork has two ways in:
+
+    F --mine-->  B             one step, and the SUT dies handling it
+    F --safe1->  C --safe2-> B two steps, safe
+
+Every run starts in the corridor, so every run faces the same fork with the
+same pheromone memory. That is the point of the shape: the crash entry leaves
+the target board when it is resolved, so only the pheromones can carry the
+lesson from one run to the next, and the fork is met afresh by every run, so
+the effect is structural rather than a lucky sample. `crashAttempts` is 2 (a
+crash entry is exhausted after two attempts, after which a crash is a
+catastrophe like any other), the campaign budget is 6 runs of 200 events, and
+the two target markings are non-intentional (`idle` in the corridor,
+`region-idle` in the region), which keeps the livelock and nontarget-region
+analyses from vetoing the moves under test.
+
+The SUT is a synchronous plug-in: `stimulate()` applies the input in the
+caller's thread and pushes `Stimulated` (then `Died` for `mine`) at once, with
+no own moves and no quiescence report. So the benchmark measures the engine's
+own guidance work, not scheduling.
+
+### The numbers
+
+Region 1000, graph seed 7 (the skip edge jumps 9), 6 runs of 200 events, three
+campaign seeds (the seeded tie-breaks), wall clock on the development
+machine:
+
+     seed 1 no ants          crashes 5 long 1 covered 201 stimuli 230 (453 ms)
+     seed 1 ants, no T-list  crashes 5 long 1 covered 201 stimuli 230 (488 ms)
+     seed 1 ants, T-list 4   crashes 3 long 3 covered 586 stimuli 618 (1195 ms)
+     seed 2 no ants          crashes 5 long 1 covered 201 stimuli 230 (434 ms)
+     seed 2 ants, no T-list  crashes 5 long 1 covered 201 stimuli 230 (471 ms)
+     seed 2 ants, T-list 4   crashes 3 long 3 covered 585 stimuli 618 (1180 ms)
+     seed 3 no ants          crashes 5 long 1 covered 201 stimuli 230 (448 ms)
+     seed 3 ants, no T-list  crashes 5 long 1 covered 201 stimuli 230 (480 ms)
+     seed 3 ants, T-list 4   crashes 3 long 3 covered 586 stimuli 618 (1203 ms)
+
+("long" counts runs that reached at least half the event budget.) Without the
+colony the campaign explores the region once — the first run — and walks into
+the crashing shortcut at the start of each of the five following runs: one
+long run, five crashes, 201 edges (the region's first-run share plus the
+corridor and the fork). With the colony's edge pheromone alone the outcome is
+identical on every seed. With both layers the campaign alternates a safe run
+and a crash: three long runs, three crashes, 586 edges — about 2.9× the
+coverage for the same run budget, at about 2.6× the time per campaign.
+
+### Why the edge channel alone changes nothing
+
+The edge channel saturates. A still-sought crash is *attractive* on purpose
+(§16: the campaign must come back and reproduce the crash), and the ants'
+target walks keep passing through the region's entry state `B` on their safe
+way to the target, so the shared, per-state edge values around the fork sit at
+`tauMax = 10` on both sides of the choice. The later catastrophe repel
+(`3.0 · (1 + 0.25 · min(stimuli, 8))`, deposited when a crash is no longer
+sought) lands on the same saturated values and cannot make the shortcut look
+worse than its neighbours; measured: edge-only ants reproduce the no-ant
+numbers to the event.
+
+The pair layer carries no ant deposits at all — `depositPairAttract` and
+`depositPairRepel` are called only from `Session.cpp`, flat at the run
+record's arrival pair, with no back-propagation and no participation by the
+walks. The crash's pair is `(B, T-list ending in mine)`: a walk that reaches
+`B` safely arrives through `safe1, safe2` and lands on a different pair. So
+the pair that names *this way into B* keeps its catastrophe repel while the
+walks flood the neighbourhood, and the suggester's pair term steers the next
+run onto the safe way. This is the decisive finding: it is not that "ants
+help", it is that one shared value per state cannot carry "this way in is
+fatal" while the target walks keep saying "this state is on the way"; the
+second memory, keyed by how the state was reached, can.
+
+### The test
+
+`tests/tst_pheromone.cpp`, one test (`thePheromonesKeepTheCampaignOffACrashingShortcut`),
+runs the three configurations on seeds 1–3, prints the table above (with
+times), and asserts per seed rather than on an average:
+
+    plain: longRuns == 1, crashes == 5
+    edge:  covered <= plain, crashes >= plain
+    pair:  longRuns >= plain + 2, crashes <= plain - 2,
+           covered >= 2 * plain, covered > 2 * edge, stimuli >= 2 * plain
+
+The model is deterministic (the seeds vary only seeded tie-breaks and the
+region's skip edge), so the assertions are exact, and the graph seed 8 was
+checked by hand during development: same shape, 201 / 201 / 586 edges.
+
+Cost: about 6.5 s, the slowest unit suite (the guided campaigns are ~1.2 s
+each). That is the price of 1000 states; the threshold is the point, not the
+size — a bigger graph measures the same thing for minutes and weakens it,
+because the repel evaporates at 2 % per suggestion (a memory of roughly 200
+suggestions). A side experiment, not part of the suite: region 10000, 4 runs
+of 1000 events — no ants 1001 edges / 3 crashes, edge-only identical, pair
+1994 edges / 2 crashes, the guided campaign ~48 s. The 1000-state, 200-event
+shape keeps the fork's lesson inside the memory's reach and the suite fast.
+
+`tst_pheromone` is CTest entry 17 (it links only `mbt_engine`; the synchronous
+SUT is local to the test). `README.md`'s suite summary and `INSTALL.md`'s test
+count now say 17 entries / 16 unit suites, and `INSTALL.md` warns that this is
+the suite's slow one. Verified:
+
+    ctest --test-dir build        # 17/17, ~48 s
+    sh cli_test.sh                # 35 tests, 0 failure(s)
+
+## 26. Update: 18 November 2026 (DeepSeek V4.1 Flash)
+
+### The requirement
+
+Egge asked for reserved lifecycle transition labels — `start`, `restart`,
+`stop`, `pause` — for SUTs that cannot be restarted from the command line. The
+case is an SUT whose process or application is brought up by hand or by its own
+controls, so the plug-in's `start_run` can attach but cannot start or restart
+it: the model itself has to press the SUT's start/restart/stop/pause control.
+The design question was what the engine does with such a transition; Egge chose
+the recommended option, "plus a new label called `resume` (to be used after
+`pause`)". This section is that design.
+
+### The words
+
+The reserved set is `start`, `restart`, `stop`, `pause`, `resume` — exactly,
+case-sensitively, and only on a *controllable* transition. The JSON loader
+recognizes the label (`Transition::lifecycle`) and warns when it sees one,
+because the word now carries engine meaning; on an observable or internal
+transition the same word stays an ordinary label (a SUT may legitimately report
+"start"), and a warning says so. Marking names are untouched: the examples
+already have an initial marking named `start` (`drink-machine`, `elevator-door`,
+`heartbeat-livelock`) and it stays a name. `NetBuilder` derives the action from
+the label for hand-built models, like the loader does.
+
+The tester still *sends* the label as a stimulus: the SUT's own control is what
+restarts it, which is the whole point. Everything below is the engine's
+addition; the wire protocol is unchanged (`docs/PLUGIN_PROTOCOL.md` says what a
+plug-in should do with the labels, and that a plug-in that cannot operate the
+control reports a fault like for any other input).
+
+### The gate
+
+The engine keeps one piece of state beside the belief: the lifecycle gate.
+
+| gate | offered | silence |
+|------|---------|---------|
+| **Running** | ordinary inputs; lifecycle transitions that have post arcs (ordinary model steps) | a fault after `--idle-timeout`, as before |
+| **Paused** | `resume`, `stop`, `restart` only | expected: no narrowing, no deadlock verdict, no idle abort |
+| **Down** | `start`, `restart` only | expected, same |
+
+The gate is not a coverage state and does not enter the goal search: while it
+is not Running the suggester returns the way back directly (`resume` before
+`stop`/`restart`, `start` before `restart`), and with none in the model the run
+is `stuck:` and says why. `stop` and `pause` set `Down`/`Paused`; `start`,
+`restart` and `resume` set `Running`; a `Quiescent` event while not Running is
+accepted quietly (`BeliefTracker::onEvent`) instead of being narrowed into the
+belief or read as a deadlock, and the Session's idle timeout is disabled (it is
+"no event although one was expected" only while the SUT runs).
+
+### The landing
+
+Whether the model's marking moves is decided by the transition's post arcs:
+
+- **with post arcs** — it is an ordinary model step. Pause can go
+  `running -> paused`, stop `running -> down`, resume `paused -> running`, and
+  the suggester can route a goal through them. The gate applies on top.
+- **without post arcs** — it is *engine-landed*. The token game does not fire
+  it: `ReachabilityGraph::expand` counts it as enabled (a state whose only way
+  on is a restart is not a dead end) but creates no edge, so it adds no
+  phantom self-loop at every state and no coverage goal. The engine supplies
+  the position:
+  - `start`, `restart` — the run's initial marking (the SUT is back at its
+    beginning). With a pre-arc but no post arc the pre-arc is a pure guard.
+  - `resume` — the belief the `pause` suspended. Only a definite pre-pause
+    belief is restored; otherwise the gate simply reopens.
+  - `stop`, `pause` — no landing; the gate is the whole effect. (An arc-less
+    `stop`/`pause` is therefore never offered while Running: with no arcs there
+    is no way to say *when*; give it post arcs to make it a model step.)
+
+A model that has an arc-less `start` or `restart` begins **every run with the
+gate Down**: the campaign presses the SUT's own control before it tests
+anything. That is the "cannot be restarted from the command line" contract —
+the engine cannot restart such a SUT itself, so the model's restart does it,
+and then the run continues from the initial marking with the coverage, the
+pheromones and the run record intact.
+
+The landing is a gap in the path (no RG edge leads to it). `landAt()` credits
+the path so far, credits the lifecycle transition on its own
+(`CoverageDb::creditTransition`: a hit, a `transitions` entry, no edge, no
+backtrace), and continues the same run from the landing with
+`creditDefinite(state, kNoEdge)` — the db's documented "definitely visited,
+previous definite state is not the predecessor". The lifecycle transition is
+therefore covered, but it has no backtrace line. `SimulatedSut` mirrors the
+landing: on an engine-landed start/restart it resets its own marking to the
+run's initial one, so the simulation cannot drift away from the model.
+
+### The tests
+
+`tests/tst_lifecycle.cpp`, six tests, all fast:
+
+- the exact words are recognized (and `Start`/`started` are not);
+- an arc-less start begins Down, is the only candidate, lands at the initial
+  marking, is credited once, and afterwards `start` is no longer offered while
+  `go` is;
+- pause through an ordinary edge moves the model to `paused`, offers only
+  `resume`, tolerates a `Quiescent` without narrowing, and an arc-less resume
+  lands back at the pre-pause marking;
+- stop (arc-less) closes the gate to `start` only, quiescence is quiet, and
+  start reopens it and lands at the initial marking;
+- a pause/resume/go run is persisted and replayed into a fresh graph and a
+  fresh db: the replay succeeds and reproduces the coverage exactly, the
+  engine-landed `resume`'s credit included; the same run as a *path* record
+  (transition ids, no events) is refused, because an engine-landed step has no
+  RG edge to replay;
+- a whole campaign against `SimulatedSut`: the first stimulus is the model's
+  `start`, then `go`, the run completes at the intentional target, the report
+  notes the start, and both transitions are covered.
+
+`tst_jsonnetloader` gained `reservedLifecycleLabelsAreParsed`: the controllable
+`restart` becomes a lifecycle input (and is not warned about being arc-less),
+the observable `start` stays ordinary and is warned about the reserved word.
+No `cli_test.sh` scenario was added: the CLI path is the same loader plus
+Session, and the campaign-level test drives the same `SimulatedSut` the CLI
+does.
+
+The suite is now **18 CTest entries** — 17 unit suites (`tst_lifecycle` is new;
+`tst_ants` 22, `tst_session` 53, `tst_jsonnetloader` 41, `tst_remote` 19) plus
+`cli_test.sh` (35 scenarios) — all green:
+
+    ctest --test-dir build        # 18/18, ~38 s
+    sh cli_test.sh                # 35 tests, 0 failure(s)
+
+`README.md` and `INSTALL.md` say 18 entries / 17 unit suites; the user manual
+has the new annotation in §2.3 and two glossary entries, and
+`docs/PLUGIN_PROTOCOL.md` tells a plug-in what the five labels mean on the
+wire.
+
+### Known limits
+
+- A run that ends immediately after a landing has no recorded step for it, so
+  the catastrophe pair (§16) lands at the last *recorded* arrival — the
+  documented single-state approximation; the live deposit and the restore's
+  rebuild read the same record, so they still agree.
+- The gate is engine state, not a recorded field: the run log stores the
+  run's events and the JSON report has the notes, so neither *names* the gate.
+  The events are enough to derive it, though, and that is exactly what a
+  replay does: `replay()` feeds them through a fresh tracker to rebuild the
+  coverage, so the same replay re-derives every gate change and every landing
+  (the parity test above pins the coverage side of this). What does not
+  survive is the *path* form of a record (transition ids, no events): an
+  engine-landed step has no RG edge, so `replay()` refuses such a run with
+  "not enabled here" instead of inventing a position. Live runs always record
+  events (`toPersisted` prefers them), so this only affects hand-written or
+  path-only logs.

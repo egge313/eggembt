@@ -1,5 +1,5 @@
 // GLM-5.3-Flash: tests of the PNML import (doku section 12, item 6): the XML
-// reader, the mbt toolspecific conventions (kinds, labels, milestones), the
+// reader, the eggembt toolspecific conventions (kinds, labels, milestones), the
 // union of per-place initial markings, inhibitor arcs and weights, and the
 // issue reporting for broken files. Also drives a session on the shipped
 // example to prove a PNML model is usable end to end.
@@ -37,8 +37,8 @@ const char *kNet = R"(<?xml version="1.0"?>
     <page id="p1">
       <place id="a"><initialMarking><text>2</text></initialMarking></place>
       <place id="b"/>
-      <transition id="go"><toolspecific tool="mbt" kind="controllable" label="go!"/></transition>
-      <transition id="done"><toolspecific tool="mbt" kind="observable" label="done"/></transition>
+      <transition id="go"><toolspecific tool="eggembt" kind="controllable" label="go!"/></transition>
+      <transition id="done"><toolspecific tool="eggembt" kind="observable" label="done"/></transition>
       <arc source="a" target="go"/>
       <arc source="go" target="b"/>
       <arc source="b" target="done"/>
@@ -88,8 +88,8 @@ struct TstPnml {
         // true means rank 1; a number is the rank; a milestone needs visibility.
         const std::string doc = R"(<?xml version="1.0"?>
 <pnml><net id="n"><place id="a"><initialMarking><text>1</text></initialMarking></place>
-<transition id="t"><toolspecific tool="mbt" kind="controllable" label="t"/>
-<toolspecific tool="mbt" kind="milestone" rank="3"/></transition>
+<transition id="t"><toolspecific tool="eggembt" kind="controllable" label="t"/>
+<toolspecific tool="eggembt" kind="milestone" rank="3"/></transition>
 <arc source="a" target="t"/><arc source="t" target="a"/></net></pnml>)";
         const LoadResult r = PnmlLoader::loadText(doc, "m.pnml");
         T_VERIFY2(r.ok(), minitest::cstr(r.report()));
@@ -101,8 +101,8 @@ struct TstPnml {
     {
         const std::string doc = R"(<?xml version="1.0"?>
 <pnml><net id="n"><place id="a"><initialMarking><text>1</text></initialMarking></place>
-<transition id="t"><toolspecific tool="mbt" kind="observable" label="t"/>
-<toolspecific tool="mbt" kind="milestone"/></transition>
+<transition id="t"><toolspecific tool="eggembt" kind="observable" label="t"/>
+<toolspecific tool="eggembt" kind="milestone"/></transition>
 <arc source="a" target="t"/><arc source="t" target="a"/></net></pnml>)";
         const LoadResult r = PnmlLoader::loadText(doc, "m.pnml");
         T_VERIFY2(r.ok(), minitest::cstr(r.report()));
@@ -115,7 +115,7 @@ struct TstPnml {
         // An internal transition without a label is silent: no milestone.
         const std::string doc = R"(<?xml version="1.0"?>
 <pnml><net id="n"><place id="a"><initialMarking><text>1</text></initialMarking></place>
-<transition id="t"><toolspecific tool="mbt" kind="milestone" rank="2"/></transition>
+<transition id="t"><toolspecific tool="eggembt" kind="milestone" rank="2"/></transition>
 <arc source="a" target="t"/><arc source="t" target="a"/></net></pnml>)";
         const LoadResult r = PnmlLoader::loadText(doc, "m.pnml");
         T_VERIFY(!r.ok());
@@ -158,7 +158,7 @@ struct TstPnml {
     {
         const std::string doc = R"(<?xml version="1.0"?>
 <pnml><net id="n"><place id="a"><initialMarking><text>1</text></initialMarking></place>
-<transition id="tick"><toolspecific tool="mbt" kind="internal" label="tick.tock"/></transition>
+<transition id="tick"><toolspecific tool="eggembt" kind="internal" label="tick.tock"/></transition>
 <arc source="a" target="tick"/><arc source="tick" target="a"/></net></pnml>)";
         const LoadResult r = PnmlLoader::loadText(doc, "p.pnml");
         T_VERIFY2(r.ok(), minitest::cstr(r.report()));
@@ -171,7 +171,7 @@ struct TstPnml {
     {
         const std::string doc = R"(<?xml version="1.0"?>
 <pnml><net id="n"><place id="a"><initialMarking><text>1</text></initialMarking></place>
-<transition id="press"><toolspecific tool="mbt" kind="controllable"/></transition>
+<transition id="press"><toolspecific tool="eggembt" kind="controllable"/></transition>
 <arc source="a" target="press"/><arc source="press" target="a"/></net></pnml>)";
         const LoadResult r = PnmlLoader::loadText(doc, "p.pnml");
         T_VERIFY2(r.ok(), minitest::cstr(r.report()));
@@ -182,7 +182,7 @@ struct TstPnml {
     {
         const std::string doc = R"(<?xml version="1.0"?>
 <pnml><net id="n"><place id="a"><initialMarking><text>1</text></initialMarking></place>
-<transition id="t"><toolspecific tool="mbt" kind="weird"/></transition>
+<transition id="t"><toolspecific tool="eggembt" kind="weird"/></transition>
 <arc source="a" target="t"/><arc source="t" target="a"/></net></pnml>)";
         const LoadResult r = PnmlLoader::loadText(doc, "p.pnml");
         T_VERIFY(!r.ok());
@@ -205,7 +205,7 @@ struct TstPnml {
     {
         const std::string doc = R"(<?xml version="1.0"?>
 <pnml><net id="n"><place id="a"><initialMarking><text>1</text></initialMarking></place>
-<transition id="t"><toolspecific tool="mbt" kind="controllable" label="t"/></transition>
+<transition id="t"><toolspecific tool="eggembt" kind="controllable" label="t"/></transition>
 <arc source="a" target="t"><type value="inhibitor"/></arc>
 <arc source="t" target="a"/></net></pnml>)";
         const LoadResult r = PnmlLoader::loadText(doc, "p.pnml");
@@ -219,7 +219,7 @@ struct TstPnml {
     {
         const std::string doc = R"(<?xml version="1.0"?>
 <pnml><net id="n"><place id="a"><initialMarking><text>4</text></initialMarking></place>
-<transition id="t"><toolspecific tool="mbt" kind="controllable" label="t"/></transition>
+<transition id="t"><toolspecific tool="eggembt" kind="controllable" label="t"/></transition>
 <arc source="a" target="t"><inscription><text>3</text></inscription></arc>
 <arc source="t" target="a" weight="2"/></net></pnml>)";
         const LoadResult r = PnmlLoader::loadText(doc, "p.pnml");
@@ -233,7 +233,7 @@ struct TstPnml {
         const std::string doc = R"(<?xml version="1.0"?>
 <pnml><net id="n"><place id="a"><initialMarking><text>1</text></initialMarking></place>
 <place id="b"><initialMarking><text>2</text></initialMarking></place>
-<transition id="t"><toolspecific tool="mbt" kind="controllable" label="t"/></transition>
+<transition id="t"><toolspecific tool="eggembt" kind="controllable" label="t"/></transition>
 <arc source="a" target="t"/><arc source="t" target="a"/></net></pnml>)";
         const LoadResult r = PnmlLoader::loadText(doc, "p.pnml");
         T_VERIFY2(r.ok(), minitest::cstr(r.report()));
@@ -248,7 +248,7 @@ struct TstPnml {
     {
         const std::string dup = R"(<?xml version="1.0"?>
 <pnml><net id="n"><place id="a"><initialMarking><text>1</text></initialMarking></place>
-<place id="a"/><transition id="t"><toolspecific tool="mbt" kind="controllable" label="t"/></transition>
+<place id="a"/><transition id="t"><toolspecific tool="eggembt" kind="controllable" label="t"/></transition>
 <arc source="a" target="t"/><arc source="t" target="a"/></net></pnml>)";
         const LoadResult r1 = PnmlLoader::loadText(dup, "p.pnml");
         T_VERIFY(!r1.ok());
@@ -256,7 +256,7 @@ struct TstPnml {
 
         const std::string collision = R"(<?xml version="1.0"?>
 <pnml><net id="n"><place id="a"><initialMarking><text>1</text></initialMarking></place>
-<transition id="a"><toolspecific tool="mbt" kind="controllable" label="t"/></transition>
+<transition id="a"><toolspecific tool="eggembt" kind="controllable" label="t"/></transition>
 <arc source="a" target="a"/></net></pnml>)";
         const LoadResult r2 = PnmlLoader::loadText(collision, "p.pnml");
         T_VERIFY(!r2.ok());
@@ -267,7 +267,7 @@ struct TstPnml {
     {
         const std::string unknown = R"(<?xml version="1.0"?>
 <pnml><net id="n"><place id="a"><initialMarking><text>1</text></initialMarking></place>
-<transition id="t"><toolspecific tool="mbt" kind="controllable" label="t"/></transition>
+<transition id="t"><toolspecific tool="eggembt" kind="controllable" label="t"/></transition>
 <arc source="a" target="nope"/></net></pnml>)";
         const LoadResult r1 = PnmlLoader::loadText(unknown, "p.pnml");
         T_VERIFY(!r1.ok());
@@ -275,7 +275,7 @@ struct TstPnml {
 
         const std::string placeToPlace = R"(<?xml version="1.0"?>
 <pnml><net id="n"><place id="a"><initialMarking><text>1</text></initialMarking></place>
-<place id="b"/><transition id="t"><toolspecific tool="mbt" kind="controllable" label="t"/></transition>
+<place id="b"/><transition id="t"><toolspecific tool="eggembt" kind="controllable" label="t"/></transition>
 <arc source="a" target="b"/></net></pnml>)";
         const LoadResult r2 = PnmlLoader::loadText(placeToPlace, "p.pnml");
         T_VERIFY(!r2.ok());
@@ -283,7 +283,7 @@ struct TstPnml {
 
         const std::string badType = R"(<?xml version="1.0"?>
 <pnml><net id="n"><place id="a"><initialMarking><text>1</text></initialMarking></place>
-<transition id="t"><toolspecific tool="mbt" kind="controllable" label="t"/></transition>
+<transition id="t"><toolspecific tool="eggembt" kind="controllable" label="t"/></transition>
 <arc source="a" target="t"><type value="reset"/></arc></net></pnml>)";
         const LoadResult r3 = PnmlLoader::loadText(badType, "p.pnml");
         T_VERIFY(!r3.ok());
@@ -293,7 +293,7 @@ struct TstPnml {
     void noTokensIsAnError()
     {
         const std::string doc = R"(<?xml version="1.0"?>
-<pnml><net id="n"><place id="a"/><transition id="t"><toolspecific tool="mbt" kind="controllable" label="t"/></transition>
+<pnml><net id="n"><place id="a"/><transition id="t"><toolspecific tool="eggembt" kind="controllable" label="t"/></transition>
 <arc source="a" target="t"/><arc source="t" target="a"/></net></pnml>)";
         const LoadResult r = PnmlLoader::loadText(doc, "p.pnml");
         T_VERIFY(!r.ok());
@@ -304,8 +304,8 @@ struct TstPnml {
     {
         const std::string doc = R"(<?xml version="1.0"?>
 <pnml><net id="n"><place id="a"><initialMarking><text>1</text></initialMarking>
-<toolspecific tool="mbt" kind="final"/></place>
-<transition id="t"><toolspecific tool="mbt" kind="controllable" label="t"/></transition>
+<toolspecific tool="eggembt" kind="final"/></place>
+<transition id="t"><toolspecific tool="eggembt" kind="controllable" label="t"/></transition>
 <arc source="a" target="t"/><arc source="t" target="a"/></net></pnml>)";
         const LoadResult r = PnmlLoader::loadText(doc, "p.pnml");
         T_VERIFY2(r.ok(), minitest::cstr(r.report()));  // only a warning
@@ -323,7 +323,7 @@ struct TstPnml {
 <!-- a comment at the top -->
 <pnml><net id="n"><name><text><![CDATA[a <b> & co]]></text></name>
 <place id="a"><initialMarking><text>1</text></initialMarking></place>
-<transition id="t"><toolspecific tool="mbt" kind="observable" label="raw &lt;label&gt;"/></transition>
+<transition id="t"><toolspecific tool="eggembt" kind="observable" label="raw &lt;label&gt;"/></transition>
 <arc source="a" target="t"/><arc source="t" target="a"/></net></pnml>)";
         const LoadResult r = PnmlLoader::loadText(doc, "p.pnml");
         T_VERIFY2(r.ok(), minitest::cstr(r.report()));

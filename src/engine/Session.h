@@ -86,10 +86,16 @@ struct SessionConfig {
     DumpPolicy dumps;
     PluginRunOptions plugin;     // quiescence timeout, passed to the plug-in
 
+    // DeepSeek V4.1 Flash: hold synchronized events (doku section 19). The model
+    // opts in per transition ("sync": true) and this switch opts in per
+    // campaign; both must agree, and the plug-in must offer the eventAcks
+    // capability, or the run says why it stays unsynchronized.
+    bool syncEvents = false;
+
     // GLM-5.3-Flash: command hooks (the "command" key of the JSON, doku
     // section 18). hookTimeoutSeconds bounds a SYNCHRONOUS hook: a child
     // still running after it is killed and its execution counts as failed.
-    // logPath, when set, is handed to every hook as MBT_LOG (the path of the
+    // logPath, when set, is handed to every hook as EGGEMBT_LOG (the path of the
     // open run log), so a hook can append to what the session records.
     std::uint32_t hookTimeoutSeconds = 60;
     std::string logPath;
@@ -264,6 +270,12 @@ private:
     // reaped -- never killed -- at destruction.
     std::map<TransitionIndex, std::uint32_t> hooksFired_;
     std::vector<pid_t> hookChildren_;
+
+    // DeepSeek V4.1 Flash: the labels of the model's synchronized transitions
+    // (doku section 19), and whether the "the plug-in cannot acknowledge"
+    // note was already given in this campaign.
+    std::vector<std::string> syncLabels_;
+    bool syncNoteGiven_ = false;
 };
 
 }  // namespace pn

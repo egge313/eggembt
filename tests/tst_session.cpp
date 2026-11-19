@@ -1831,7 +1831,9 @@ static Net makeAlwaysCrashNet()
     const auto walk = b.transition("walk", TransitionKind::Controllable, "walk");
     b.input(s0, hit).output(hit, s0);
     b.input(s0, walk).output(walk, s0);
-    b.crash(hit, CrashPrediction{CrashClass::Always});
+    CrashPrediction prediction;  // DeepSeek V4.1 Flash: name the field, not a partial aggregate
+    prediction.crashClass = CrashClass::Always;
+    b.crash(hit, prediction);
     b.initial("start", {{s0, 1}});
     b.targetMarking("idle", {{s0, 1}});
     return b.build();
@@ -2114,7 +2116,7 @@ static void testTheCrashExperimentRebuildsExactly()
 // ---------------------------------------------------------------------------
 // GLM-5.3-Flash: command hooks (doku section 18). The hooks run through sh -c
 // in the test's environment, so a hook proves what it saw and what it did by
-// writing files the test points at with MBT_HOOKFILE / MBT_ENVFILE. Every
+// writing files the test points at with EGGEMBT_HOOKFILE / EGGEMBT_ENVFILE. Every
 // synchronous hook here is bounded: its transition fires a known, small
 // number of times (or the hook carries a "times" budget).
 // ---------------------------------------------------------------------------
@@ -2165,7 +2167,7 @@ static Net makeHookChainNet(const std::string &cmdA = "", const std::string &cmd
 // The same chain, but the first two hooks carry a "when" guard on s2: ta's
 // step leaves the tester in s1 (the guard fails), tb's step in s2 (it holds).
 // The command is shared: it appends the transition's own id, which the hook
-// receives as MBT_TRANSITION.
+// receives as EGGEMBT_TRANSITION.
 static Net makeHookGuardNet(const std::string &cmd)
 {
     NetBuilder b("hook-guard");
@@ -2275,9 +2277,9 @@ static void testCommandHookGuardReadsTheBeliefAfterTheStep()
 {
     TempDir dir;
     const std::string marker = dir.filePath("hooks.txt");
-    ::setenv("MBT_HOOKFILE", marker.c_str(), 1);
+    ::setenv("EGGEMBT_HOOKFILE", marker.c_str(), 1);
     // One command for both hooks: it appends the transition's own id.
-    const Net net = makeHookGuardNet("echo \"$MBT_TRANSITION\" >> \"$MBT_HOOKFILE\"");
+    const Net net = makeHookGuardNet("echo \"$EGGEMBT_TRANSITION\" >> \"$EGGEMBT_HOOKFILE\"");
     SessionConfig cfg = quick();
     Session session(net, cfg);
     FakeSut sut(net);
@@ -2293,8 +2295,8 @@ static void testAnAsyncCommandHookIsLaunchedNotWaited()
 {
     TempDir dir;
     const std::string marker = dir.filePath("hooks.txt");
-    ::setenv("MBT_HOOKFILE", marker.c_str(), 1);
-    const Net net = makeHookChainNet("", "", "echo tc >> \"$MBT_HOOKFILE\"", /*cAsync=*/true);
+    ::setenv("EGGEMBT_HOOKFILE", marker.c_str(), 1);
+    const Net net = makeHookChainNet("", "", "echo tc >> \"$EGGEMBT_HOOKFILE\"", /*cAsync=*/true);
     SessionConfig cfg = quick();
     Session session(net, cfg);
     FakeSut sut(net);
@@ -2358,8 +2360,8 @@ static void testRestoredRunsAdoptHookRecordsWithoutReexecuting()
 {
     TempDir dir;
     const std::string marker = dir.filePath("hooks.txt");
-    ::setenv("MBT_HOOKFILE", marker.c_str(), 1);
-    const Net net = makeHookChainNet("echo \"$MBT_TRANSITION\" >> \"$MBT_HOOKFILE\"");
+    ::setenv("EGGEMBT_HOOKFILE", marker.c_str(), 1);
+    const Net net = makeHookChainNet("echo \"$EGGEMBT_TRANSITION\" >> \"$EGGEMBT_HOOKFILE\"");
     SessionConfig cfg = quick();
     std::vector<PersistedRun> saved;
     cfg.runSink = [&saved](const PersistedRun &r) { saved.push_back(r); };
@@ -2384,13 +2386,13 @@ static void testCommandHooksReceiveTheirContext()
     TempDir dir;
     const std::string envFile = dir.filePath("env.txt");
     const std::string logPath = dir.filePath("trail.log");
-    ::setenv("MBT_ENVFILE", envFile.c_str(), 1);
+    ::setenv("EGGEMBT_ENVFILE", envFile.c_str(), 1);
     // The hook writes what it saw: transition id | label | run id | log path.
     const Net net = makeHookChainNet(
-        "printf '%s|%s|%s|%s\\n' \"$MBT_TRANSITION\" \"$MBT_TRANSITION_LABEL\" \"$MBT_RUN\" \"$MBT_LOG\""
-        " > \"$MBT_ENVFILE\"");
+        "printf '%s|%s|%s|%s\\n' \"$EGGEMBT_TRANSITION\" \"$EGGEMBT_TRANSITION_LABEL\" \"$EGGEMBT_RUN\" \"$EGGEMBT_LOG\""
+        " > \"$EGGEMBT_ENVFILE\"");
     SessionConfig cfg = quick();
-    cfg.logPath = logPath;  // the open run log travels to every hook as MBT_LOG
+    cfg.logPath = logPath;  // the open run log travels to every hook as EGGEMBT_LOG
     Session session(net, cfg);
     FakeSut sut(net);
     const CampaignReport rep = session.runCampaign(sut);
@@ -2399,6 +2401,99 @@ static void testCommandHooksReceiveTheirContext()
 }
 
 // ---------------------------------------------------------------------------
+
+// DeepSeek V4.1 Flash: a synchronized observable step (doku section 19). The SUT
+// holds itself at "out" until the tracker acknowledged the event.
+static Net makeSyncNet(DumpMode dump = DumpMode::None, bool error = false)
+{
+    NetBuilder b("sync");
+    const auto s0 = b.place("s0");
+    const auto s1 = b.place("s1");
+    const auto s2 = b.place("s2");
+    const auto go = b.transition("go", TransitionKind::Controllable, "go");
+    const auto out = b.transition("out", TransitionKind::Observable, "out");
+    b.input(s0, go).output(go, s1);
+    b.input(s1, out).output(out, s2);
+    b.initial("start", {{s0, 1}});
+    b.targetMarking("done", {{s2, 1}});
+    b.sync(out);
+    if (error)
+        b.error(out, dump, 1);
+    return b.build();
+}
+
+static void testASynchronizedEventHoldsTheSutUntilTheAck()
+{
+    const Net net = makeSyncNet();
+    FakeSut sut(net);
+    SessionConfig cfg = quick();
+    cfg.syncEvents = true;
+    Session session(net, cfg);
+
+    const RunReport r = session.runOnce(sut);
+    CHECK(r.outcome == RunOutcome::Completed);
+    CHECK(sut.acknowledgements() == 1);  // the one held output was released
+    CHECK(!sut.holding());
+    CHECK(session.coverage().transitionHits(*net.findTransition("out")) == 1);
+}
+
+static void testWithoutTheSwitchNothingIsHeld()
+{
+    const Net net = makeSyncNet();
+    FakeSut sut(net);
+    SessionConfig cfg = quick();  // syncEvents stays off
+    Session session(net, cfg);
+
+    const RunReport r = session.runOnce(sut);
+    CHECK(r.outcome == RunOutcome::Completed);
+    CHECK(sut.acknowledgements() == 0);
+    CHECK(!sut.dumpSawHeldEvent());
+}
+
+static void testThePostMortemSeesTheHeldStack()
+{
+    // The reason the feature exists: an error transition's post-mortem must see
+    // the stack frozen at the event, so the ack has to come after the dump.
+    const Net net = makeSyncNet(DumpMode::Snapshot, /*error=*/true);
+    FakeSut sut(net);
+    SessionConfig cfg = quick();
+    cfg.syncEvents = true;
+    Session session(net, cfg);
+
+    const RunReport r = session.runOnce(sut);
+    CHECK(r.outcome == RunOutcome::Completed);  // a snapshot does not end the run
+    CHECK(r.dumps == 1);
+    CHECK(r.errorsReached.size() == 1 && r.errorsReached[0] == "out");
+    CHECK(sut.dumpSawHeldEvent());  // the dump was taken while the SUT was held
+    CHECK(sut.acknowledgements() == 1);
+}
+
+static void testAPluginThatCannotAckIsNoted()
+{
+    const Net net = makeSyncNet();
+    FakeSutOptions opt;
+    opt.eventAcks = false;  // a plug-in without the capability
+    FakeSut sut(net, opt);
+    SessionConfig cfg = quick();
+    cfg.syncEvents = true;
+    Session session(net, cfg);
+
+    const RunReport r1 = session.runOnce(sut);
+    CHECK(r1.outcome == RunOutcome::Completed);
+    CHECK(sut.acknowledgements() == 0);
+    bool noted = false;
+    for (const std::string &n : r1.notes)
+        if (contains(n, "cannot acknowledge events") && contains(n, "not synchronized"))
+            noted = true;
+    CHECK(noted);
+    CHECK(!sut.dumpSawHeldEvent());
+
+    // The note explains itself once per campaign, not once per run.
+    const RunReport r2 = session.runOnce(sut);
+    CHECK(r2.outcome == RunOutcome::Completed);
+    for (const std::string &n : r2.notes)
+        CHECK(!contains(n, "cannot acknowledge events"));
+}
 
 int main()
 {
@@ -2452,6 +2547,10 @@ int main()
         {"aRuledOutSuspectCommandIsReported", testARuledOutSuspectCommandIsReported},  // GLM-5.3-Flash
         {"restoredRunsAdoptHookRecordsWithoutReexecuting", testRestoredRunsAdoptHookRecordsWithoutReexecuting},  // GLM-5.3-Flash
         {"commandHooksReceiveTheirContext", testCommandHooksReceiveTheirContext},  // GLM-5.3-Flash
+        {"aSynchronizedEventHoldsTheSutUntilTheAck", testASynchronizedEventHoldsTheSutUntilTheAck},  // DeepSeek V4.1 Flash
+        {"withoutTheSwitchNothingIsHeld", testWithoutTheSwitchNothingIsHeld},  // DeepSeek V4.1 Flash
+        {"thePostMortemSeesTheHeldStack", testThePostMortemSeesTheHeldStack},  // DeepSeek V4.1 Flash
+        {"aPluginThatCannotAckIsNoted", testAPluginThatCannotAckIsNoted},  // DeepSeek V4.1 Flash
     };
     for (const auto &t : tests) {
         const int before = g_failures;

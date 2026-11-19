@@ -1,6 +1,6 @@
 // GLM-5.3-Flash: the reference agent shim for C++ SUTs (doku section 12,
 // item 7). The reusable part is engine/AgentServer: it wraps ANY ISutPlugin
-// in the line protocol, so a tracker ('mbt run MODEL --agent ...') can test a
+// in the line protocol, so a tracker ('eggembt run MODEL --agent ...') can test a
 // SUT that lives in another process. This program shows the whole path for a
 // hand-written C++ SUT:
 //
@@ -9,7 +9,7 @@
 // and nothing in the SUT knows about the model: the machine below is a plain
 // state machine. Test it with:
 //
-//   mbt run examples/agents/coffee.json --agent "examples/agents/ref-agent"
+//   eggembt run examples/agents/coffee.json --agent "examples/agents/ref-agent"
 //
 // WHAT A WRAPPER MUST DO (see engine/SutPlugin.h for the contract):
 //   startRun   put the SUT into the state the named initial marking of the
@@ -229,7 +229,7 @@ int main()
     // GLM-5.3-Flash: the protocol owns standard input and output; diagnostics
     // go to standard error. FdTransport, not StreamTransport: its reader can
     // be stopped cleanly, so this process can still exit while the tracker
-    // keeps the pipe open (same reasoning as mbt agent-sim).
+    // keeps the pipe open (same reasoning as eggembt agent-sim).
     RefSutPlugin sut;
     std::unique_ptr<ILineTransport> link;
 #ifdef MBT_POSIX_IO
@@ -237,7 +237,7 @@ int main()
 #else
     link = std::make_unique<StreamTransport>(std::cin, std::cout);  // the protocol owns standard output here
 #endif
-    AgentServer server(sut, *link, "mbt-ref-agent");
+    AgentServer server(sut, *link, "eggembt-ref-agent");
     server.start();
     while (!server.waitUntilFinished(std::chrono::milliseconds(200))) {
     }

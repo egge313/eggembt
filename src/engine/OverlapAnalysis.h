@@ -12,7 +12,7 @@
 // the transitions that certainly fired (CoverageDb does the attribution);
 // this file only sorts and de-duplicates those into sets. A replayed run
 // yields the same sets as the live run, so campaigns can be compared after
-// the fact from run logs (`mbt compare`).
+// the fact from run logs (`eggembt compare`).
 //
 // Runs (and campaigns) with nothing covered at all count as identical
 // (index 1): two runs that covered nothing have the same coverage.

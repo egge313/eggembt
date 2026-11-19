@@ -1,5 +1,7 @@
 #include "engine/SimulatedSut.h"
 
+#include <algorithm>  // DeepSeek V4.1 Flash: isSyncLabel
+
 namespace pn {
 
 SimulatedSut::SimulatedSut(const Net &net, SimulatedSutOptions options) : net_(net), opt_(std::move(options)) {}
@@ -11,7 +13,12 @@ SimulatedSut::~SimulatedSut()
 
 PluginCapabilities SimulatedSut::capabilities() const
 {
-    return {opt_.snapshot, opt_.crash, 100};
+    PluginCapabilities caps;  // DeepSeek V4.1 Flash: eventAcks comes from the options
+    caps.snapshot = opt_.snapshot;
+    caps.crash = opt_.crash;
+    caps.restartMs = 100;
+    caps.eventAcks = opt_.eventAcks;
+    return caps;
 }
 
 bool SimulatedSut::startRun(const std::string &initial, const PluginRunOptions &options, EventQueue &events,
@@ -33,8 +40,15 @@ bool SimulatedSut::startRun(const std::string &initial, const PluginRunOptions &
             *error = "unknown initial marking \"" + initial + "\"";
         return false;
     }
+    initialMarking_ = marking_;  // DeepSeek V4.1 Flash: the lifecycle landing
     events_ = &events;
     quiescenceMs_ = options.quiescenceTimeoutMs;
+    // DeepSeek V4.1 Flash: only an agent that can ack is asked to hold; the
+    // Session sends an empty list otherwise.
+    syncLabels_ = options.syncLabels;
+    waitingAck_.reset();
+    acks_ = 0;
+    dumpSawHeld_ = false;
     rng_.seed(opt_.seed + generation_);
     ++generation_;
     crashed_ = false;
@@ -45,8 +59,10 @@ bool SimulatedSut::startRun(const std::string &initial, const PluginRunOptions &
     start_ = std::chrono::steady_clock::now();
     lastActivity_ = start_;
     pendingStim_.clear();
+    // DeepSeek V4.1 Flash: the synthetic burst is scaffolding, never held (nothing
+    // could ack before the run has even been acknowledged).
     for (int i = 0; i < opt_.burstAtStart; ++i)
-        push(EventKind::Observed, i % 2 == 0 ? "ping" : "pong");
+        push(EventKind::Observed, i % 2 == 0 ? "ping" : "pong", /*hold=*/false);
     stop_ = false;
     worker_ = std::thread([this] { loop(); });
     return true;
@@ -70,6 +86,10 @@ PostMortem SimulatedSut::postMortem(DumpMode mode)
 {
     std::lock_guard<std::mutex> lock(m_);
     PostMortem pm;
+    // DeepSeek V4.1 Flash: is the SUT still held at a synchronized event? Then the
+    // dump really sees the stack the event left behind (doku section 19), and
+    // the test can check that the ack comes after the dump, not before.
+    dumpSawHeld_ = waitingAck_.has_value();
     // GLM-5.3-Flash: a SUT that died on its own cannot be asked for a
     // post-mortem anymore; the crash prediction's dump request runs into
     // this and the session reports the failure.
@@ -92,6 +112,36 @@ void SimulatedSut::stopRun(StopReason)
 {
     halt();
     ++stopCalls_;
+}
+
+void SimulatedSut::acknowledgeEvent(std::uint64_t queueSeq)
+{
+    // DeepSeek V4.1 Flash: the tracker handled the event: let the SUT go on. An ack
+    // for anything else (a late one, a non-synchronized event) is ignored.
+    std::lock_guard<std::mutex> lock(m_);
+    if (waitingAck_ && *waitingAck_ == queueSeq) {
+        waitingAck_.reset();
+        ++acks_;
+        ackCv_.notify_all();
+    }
+}
+
+std::uint64_t SimulatedSut::acknowledgements() const
+{
+    std::lock_guard<std::mutex> lock(m_);
+    return acks_;
+}
+
+bool SimulatedSut::holding() const
+{
+    std::lock_guard<std::mutex> lock(m_);
+    return waitingAck_.has_value();
+}
+
+bool SimulatedSut::dumpSawHeldEvent() const
+{
+    std::lock_guard<std::mutex> lock(m_);
+    return dumpSawHeld_;
 }
 
 std::string SimulatedSut::pollFault()
@@ -130,6 +180,7 @@ void SimulatedSut::halt()
         std::lock_guard<std::mutex> lock(m_);
         stop_ = true;
     }
+    ackCv_.notify_all();  // DeepSeek V4.1 Flash: a held SUT must not block the end of the run
     if (worker_.joinable())
         worker_.join();
 }
@@ -143,21 +194,45 @@ std::int64_t SimulatedSut::stamp()
     return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start_).count();
 }
 
-void SimulatedSut::push(EventKind kind, const std::string &label)
+std::optional<std::uint64_t> SimulatedSut::push(EventKind kind, const std::string &label, bool hold)
 {
     if (!events_)
-        return;
-    events_->push(SutEvent{kind, label, stamp()});
+        return std::nullopt;
+    // DeepSeek V4.1 Flash: a synchronized event is the SUT's own visible move and
+    // the run is synchronized: the producer (this thread) holds the SUT until
+    // the tracker acknowledges. The flag travels with the queue entry, so the
+    // Session knows to stop pumping and ack exactly this event.
+    const bool sync = hold && kind == EventKind::Observed && isSyncLabel(label) && !crashed_;
+    std::uint64_t seq = 0;
+    events_->push(SutEvent{kind, label, stamp()}, &seq, sync);
     ++eventsPushed_;
     quiescentSent_ = false;
     lastActivity_ = std::chrono::steady_clock::now();
     // GLM-5.3-Flash: a death nobody predicted, after N events wherever the
     // SUT is. Checked at the one choke point every event goes through, so
     // the Died event always follows the event that reached the count.
-    if (!crashed_ && opt_.crashAfterEvents >= 0 && eventsPushed_ >= opt_.crashAfterEvents) {
+    const bool willDie = !crashed_ && opt_.crashAfterEvents >= 0 && eventsPushed_ >= opt_.crashAfterEvents;
+    if (willDie) {
         crashed_ = true;  // set first: the recursive push must not re-trigger
         push(EventKind::Died, "spontaneous failure");
     }
+    if (sync) {
+        waitingAck_ = seq;
+        return seq;
+    }
+    return std::nullopt;
+}
+
+bool SimulatedSut::isSyncLabel(const std::string &label) const
+{
+    return std::find(syncLabels_.begin(), syncLabels_.end(), label) != syncLabels_.end();
+}
+
+void SimulatedSut::waitForAck(std::unique_lock<std::mutex> &lock, std::uint64_t seq)
+{
+    ackCv_.wait(lock, [&] { return stop_ || !waitingAck_ || *waitingAck_ != seq; });
+    if (waitingAck_ && *waitingAck_ == seq)
+        waitingAck_.reset();  // stopped while held
 }
 
 void SimulatedSut::applyStimulus(const std::string &label)
@@ -182,6 +257,13 @@ void SimulatedSut::applyStimulus(const std::string &label)
             Marking next(marking_.size());
             if (fire(net_, t, marking_.data(), next.data()).status == FireStatus::Ok)
                 marking_ = next;
+            // DeepSeek V4.1 Flash: an engine-landed start/restart (no post arcs,
+            // doku section 26) brings the simulated SUT itself back to the run's
+            // initial marking -- the model says the SUT's own control did it, so
+            // the simulation must not keep its old marking.
+            if ((t.lifecycle == LifecycleAction::Start || t.lifecycle == LifecycleAction::Restart)
+                && t.post.empty())
+                marking_ = initialMarking_;
             break;
         }
     }
@@ -198,7 +280,7 @@ void SimulatedSut::loop()
 {
     for (;;) {
         std::this_thread::sleep_for(std::chrono::milliseconds(opt_.stepDelayMs));
-        std::lock_guard<std::mutex> lock(m_);
+        std::unique_lock<std::mutex> lock(m_);
         if (stop_ || crashed_)
             return;
         if (opt_.silent)
@@ -256,8 +338,13 @@ void SimulatedSut::loop()
         quiescentSent_ = false;
         const bool visible = t.kind == TransitionKind::Observable
                              || (t.kind == TransitionKind::Internal && t.traced);  // GLM-5.3-Flash
-        if (visible)
-            push(EventKind::Observed, t.label);
+        if (visible) {
+            // DeepSeek V4.1 Flash: a synchronized event freezes the SUT here, after
+            // the move and before the next one, until the tracker acked.
+            const std::optional<std::uint64_t> held = push(EventKind::Observed, t.label);
+            if (held)
+                waitForAck(lock, *held);
+        }
     }
 }
 

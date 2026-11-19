@@ -1,6 +1,6 @@
-# The mbt plug-in protocol (version 1)
+# The eggembt plug-in protocol (version 1)
 
-How the tracker (`mbt run`, a `Session`) talks to an **agent** — a small
+How the tracker (`eggembt run`, a `Session`) talks to an **agent** — a small
 program that sits next to the system under test (SUT), possibly in another
 process, on another machine, written in another language. The agent starts the
 SUT in a requested state, hands over the inputs the tracker suggests, takes
@@ -17,25 +17,26 @@ descriptors, child processes, TCP) live in `src/io/Transports.h`; they all
 implement the three-method `ILineTransport` interface (`sendLine`,
 `setLineHandler`, `setCloseHandler`). The generic agent shim, which turns any
 `ISutPlugin` into a speaking agent, is `src/engine/AgentServer.h`; the tracker
-side is `src/engine/RemotePlugin.h`. `mbt agent-sim MODEL` is a ready-made
+side is `src/engine/RemotePlugin.h`. `eggembt agent-sim MODEL` is a ready-made
 reference agent over the built-in simulated SUT.
 
-Direction of the five message types per side:
+The message types, by direction:
 
 | agent → tracker        | tracker → agent  |
 | ---------------------- | ---------------- |
 | `hello`                | `start_run`      |
 | `run_started`          | `stimulate`      |
 | `event`                | `post_mortem`    |
-| `post_mortem_result`   | `stop_run`       |
-| `fault`                | `shutdown`       |
+| `post_mortem_result`   | `ack`            |
+| `fault`                | `stop_run`       |
+|                        | `shutdown`       |
 
 ## 1. Handshake
 
 The agent speaks first. On connecting, it sends:
 
 ```json
-{"type":"hello","protocol":1,"name":"drink-agent","snapshot":true,"crash":false,"restart_ms":2000}
+{"type":"hello","protocol":1,"name":"drink-agent","snapshot":true,"crash":false,"restart_ms":2000,"sync":true}
 ```
 
 | field        | required | meaning                                                        |
@@ -45,17 +46,21 @@ The agent speaks first. On connecting, it sends:
 | `snapshot`   | no       | the agent can take non-destructive dumps (default false)       |
 | `crash`      | no       | the agent can crash-dump the SUT (default false)               |
 | `restart_ms` | no       | typical time to restart the SUT; informational                 |
+| `sync`       | no       | the agent can hold the SUT at an event until the tracker acks it (default false; §2, *ack*) |
 
 The tracker waits for hello up to `--hello-timeout` (default 10000 ms). The
 capabilities decide what it will ever ask for: without `snapshot` it never
-requests a snapshot post-mortem, without `crash` never a crash.
+requests a snapshot post-mortem, without `crash` never a crash, and without
+`sync` it never sends `sync_labels` (the run then goes on unsynchronized and
+says why in a note). The version stays 1: every addition is capability-gated
+and unknown fields are ignored.
 
 ## 2. Messages from the tracker
 
 ### start_run
 
 ```json
-{"type":"start_run","run":1,"initial":"start","quiescence_ms":500}
+{"type":"start_run","run":1,"initial":"start","quiescence_ms":500,"sync_labels":["coffee.served"]}
 ```
 
 | field           | required | meaning                                                                 |
@@ -63,6 +68,12 @@ requests a snapshot post-mortem, without `crash` never a crash.
 | `run`           | no       | the number of this run; echo it in every event of the run               |
 | `initial`       | yes      | name of the model's initial marking to start the SUT in                 |
 | `quiescence_ms` | no       | after this much SUT silence, send a `quiescent` event (0: never)        |
+| `sync_labels`   | no       | labels to hold the SUT at until an `ack` (§2, *ack*); sent only when the tracker runs with `--sync-events` and hello said `"sync": true` |
+
+`sync_labels` is absent when the run is not synchronized. An agent that gets it
+holds the SUT **after** pushing an observed event whose label is in the list,
+before letting the SUT take its next move, and sends that event with
+`"sync": true` and its `seq` (§3, *event*).
 
 Start (or restart) the SUT in that state and answer with `run_started` — the
 tracker waits up to ten seconds. Do not wait for the SUT's first event first;
@@ -80,6 +91,16 @@ has actually been handed over — if it never arrives, the tracker aborts the ru
 after `--ack-timeout` (default 5000 ms). If you cannot hand the input over at
 all, say so with a `fault` message.
 
+The model's reserved lifecycle labels — `start`, `restart`, `stop`, `pause`
+and `resume` — arrive here like any other input. Pass them to the SUT's own
+control (its start/restart button, its stop/pause command): the point of the
+feature is an SUT that the plug-in cannot start or restart from the command
+line. The engine, not the plug-in, adjusts the run's position and its
+lifecycle gate (`doku.md` §26); the plug-in only acknowledges that the SUT's
+control was operated. The engine may send a `restart` (or `start`) before an
+ordinary input, because a model whose start/restart has no arcs begins every
+run by pressing it.
+
 ### post_mortem
 
 ```json
@@ -92,6 +113,28 @@ all, say so with a `fault` message.
 | `mode`  | yes      | `snapshot`: non-destructive dump, the SUT keeps running and its events keep arriving. `crash`: end the SUT in a controlled way for a genuine crash dump; the next `start_run` restarts it. |
 
 The tracker waits up to 60 seconds for the result.
+
+### ack
+
+```json
+{"type":"ack","run":1,"seq":7}
+```
+
+| field | required | meaning                                                          |
+| ----- | -------- | ---------------------------------------------------------------- |
+| `seq` | yes      | the `seq` of the event the agent is holding the SUT at           |
+| `run` | no       | the run number; the server ignores an ack of another run         |
+
+The tracker handled the event: everything the event caused has been done —
+including a post-mortem taken for it— and the SUT may continue. The tracker
+sends one ack per event that arrived with `"sync": true`, never for any other
+event. If the run ends while the SUT is held, no ack comes: `stop_run` (or
+`shutdown`, or the closing connection) must release the SUT instead, so it can
+be stopped or restarted.
+
+Why: the tracker can take an accurate stack dump at the event only while the
+SUT is standing still. Holding it also slows a fast SUT down, which is the
+price of that control (doku section 19).
 
 ### stop_run
 
@@ -132,7 +175,8 @@ the campaign (three aborted runs in a row by default).
 ### event
 
 ```json
-{"type":"event","kind":"observed","label":"coffee.served","run":1,"t":730}
+{"type":"event","kind":"observed","label":"coffee.served","run":1,"t":730,"seq":4}
+{"type":"event","kind":"observed","label":"coffee.served","run":1,"t":731,"seq":5,"sync":true}
 ```
 
 | field   | required | meaning                                                                       |
@@ -141,15 +185,24 @@ the campaign (three aborted runs in a row by default).
 | `label` | see text | the label of the transition; required for `observed` and `stimulated`, absent for `quiescent` |
 | `run`   | no       | the run number, echoed from `start_run` (send it; see below)                  |
 | `t`     | no       | capture timestamp in milliseconds, from your own clock; the tracker only compares timestamps within one run |
+| `seq`   | no       | event number within the run, starting at 0, increasing by one for every event; an `ack` names it |
+| `sync`  | no       | `true`: the agent is holding the SUT at this event until the `ack` for this `seq` arrives |
+
+An agent that holds the SUT sends `seq` on every event of the run, so the
+tracker and the agent number the stream the same way; the second line above is
+the synchronized form of the first.
 
 Rules that matter more than the fields:
 
 - Send each event as soon as it is captured, in capture order. The arrival
   order is the one truth the tracker works with; a race between a suggested
   input and a fast SUT is preserved, not smoothed away.
-- The tracker never blocks you: it does not answer events, so never wait for
-  an answer. Events go on the tracker's asynchronous queue; if that is full it
-  refuses and the run is aborted — never dropped silently.
+- The tracker does not answer an ordinary event, so never wait for one.
+  Events go on the tracker's asynchronous queue; if that is full it refuses and
+  the run is aborted — never dropped silently. The one exception is a
+  synchronized event: when `start_run` carried its label in `sync_labels`, hold
+  the SUT after pushing it, mark the event `"sync": true` with its `seq`, and
+  wait for the matching `ack` (or the end of the run).
 - Echo the `run` number. Events carrying an older run number are dropped by
   the tracker as late arrivals of a previous run, so tagging is what keeps a
   stale event from poisoning the next run.
@@ -209,6 +262,21 @@ right column: tracker):
 Everything the agent sent after `shutdown` would be ignored; the tracker then
 closes the transport.
 
+A synchronized stretch looks like this (`coffee.served` is in `sync_labels`,
+so event number 2 is held):
+
+```
+← {"type":"start_run","run":1,"initial":"start","quiescence_ms":500,"sync_labels":["coffee.served"]}
+→ {"type":"run_started","ok":true}
+→ {"type":"event","kind":"stimulated","label":"coin.insert","run":1,"t":104,"seq":0}
+→ {"type":"event","kind":"stimulated","label":"button.coffee","run":1,"t":210,"seq":1}
+→ {"type":"event","kind":"observed","label":"coffee.served","run":1,"t":730,"seq":2,"sync":true}
+                                     (the SUT is standing still here)
+← {"type":"ack","run":1,"seq":2}
+→ {"type":"event","kind":"quiescent","run":1,"t":1240,"seq":3}
+← {"type":"stop_run","reason":"finished"}
+```
+
 ## 5. Checklist for agent authors
 
 1. One JSON object per line, flushed immediately, over any byte transport.
@@ -223,16 +291,21 @@ closes the transport.
 5. After `quiescence_ms` of SUT silence, send a `quiescent` event (no label).
    The tracker has no clock of its own; without your quiescent event it cannot
    notice a SUT that fell silent while it owed an output.
-6. Acknowledge every `stimulate` with a `stimulated` event once the input has
+6. If `start_run` carried `sync_labels`, number every event of the run with
+   `seq`, and hold the SUT after pushing a matching observed event, marked
+   `"sync": true`, until the `ack` for that `seq` arrives. Advertise `"sync":
+   true` in hello, and release the SUT on `stop_run`/`shutdown`/a closed
+   connection even when no ack came.
+7. Acknowledge every `stimulate` with a `stimulated` event once the input has
    actually been handed over — not when the SUT has reacted to it.
-7. On `post_mortem`, take the dump and answer with the same `id`, the file
+8. On `post_mortem`, take the dump and answer with the same `id`, the file
    paths, and the stack if you can produce one. Never stop the SUT for a
    snapshot; after a `crash`, expect the next `start_run` to restart it.
-8. On `stop_run`, clean up and stop sending events of that run. Keep the
+9. On `stop_run`, clean up and stop sending events of that run. Keep the
    process alive: the next run starts with a new `start_run`, not a new agent.
-9. Report unrecoverable problems with `fault` instead of dying silently.
-10. On `shutdown`, exit(0).
-11. To try your agent: `mbt run MODEL --agent "./your-agent MODEL"`, or keep it
+10. Report unrecoverable problems with `fault` instead of dying silently.
+11. On `shutdown`, exit(0).
+12. To try your agent: `eggembt run MODEL --agent "./your-agent MODEL"`, or keep it
     long-lived and use `--connect HOST:PORT` / `--listen [ADDR:]PORT`, or talk
     standard input/output with `--stdio` (the protocol then owns the pipe, so
     the tracker's human-readable output goes to stderr).
@@ -247,9 +320,10 @@ closes the transport.
 | line transports                   | `src/io/Transports.h/.cpp`       |
 | the plug-in interface underneath  | `src/engine/SutPlugin.h`         |
 | protocol and transport tests      | `tests/tst_remote.cpp`, `tests/tst_transports.cpp` |
-| a working reference agent         | `mbt agent-sim MODEL`            |
+| a working reference agent         | `eggembt agent-sim MODEL`            |
 
 ---
 
-The design context for this protocol is `doku.md` §8. Document written on
-14 November 2026 by GLM-5.3-Flash.
+The design context for this protocol is `doku.md` §8; synchronized events are
+`doku.md` §19. Document written on 14 November 2026 by DeepSeek V4.1 Flash; extended
+with synchronized events on 18 November 2026 by DeepSeek V4.1 Flash.

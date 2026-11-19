@@ -294,6 +294,26 @@ struct TstJsonNetLoader {
         T_VERIFY(hasIssue(r, LoadIssue::Severity::Warning, "$.arcs[0].wieght"));
     }
 
+    // DeepSeek V4.1 Flash: the reserved lifecycle labels (doku section 26) are
+    // recognized on controllable transitions only; an arc-less lifecycle input
+    // is legitimate and does not get the "no arcs" warning.
+    void reservedLifecycleLabelsAreParsed()
+    {
+        const char *transitions =
+            R"([{"id":"r","label":"restart","kind":"controllable"},)"
+            R"({"id":"o","label":"start","kind":"observable"}])";
+        const LoadResult r =
+            JsonNetLoader::loadJson(makeDoc(kPlaces, transitions, "[]",
+                                            R"({"initial":[{"name":"s","tokens":{"p":1}}]})"));
+        T_VERIFY2(r.ok(), minitest::cstr(r.report()));
+        const pn::Net &net = *r.net;
+        T_COMPARE(net.transitions[0].lifecycle, pn::LifecycleAction::Restart);
+        T_COMPARE(net.transitions[1].lifecycle, pn::LifecycleAction::None);
+        T_VERIFY(hasIssue(r, LoadIssue::Severity::Warning, "$.transitions[0]", "lifecycle"));
+        T_VERIFY(hasIssue(r, LoadIssue::Severity::Warning, "$.transitions[1]", "reserved"));
+        T_VERIFY(!hasIssue(r, LoadIssue::Severity::Warning, "$.transitions[0]", "no arcs"));
+    }
+
     void arclessTransitionWarns()
     {
         const char *transitions =
@@ -765,6 +785,51 @@ struct TstJsonNetLoader {
         }
     }
 
+    // DeepSeek V4.1 Flash: the "sync" key (doku section 19) on the SUT's own moves.
+    void syncKeyIsParsed()
+    {
+        const char *transitions =
+            R"([{"id":"t","label":"go","kind":"controllable"},)"
+            R"({"id":"u","label":"out","kind":"observable","sync":true},)"
+            R"({"id":"v","label":"in","kind":"observable"},)"
+            R"({"id":"w","label":"audit","kind":"internal","traced":true,"sync":true}])";
+        const LoadResult r = JsonNetLoader::loadJson(makeDoc(kPlaces, transitions, kArcs));
+        T_VERIFY2(r.ok(), minitest::cstr(r.report()));
+        T_VERIFY(!r.net->transitions[*r.net->findTransition("t")].synchronized);
+        T_VERIFY(r.net->transitions[*r.net->findTransition("u")].synchronized);
+        T_VERIFY(!r.net->transitions[*r.net->findTransition("v")].synchronized);
+        T_VERIFY(r.net->transitions[*r.net->findTransition("w")].synchronized);
+    }
+
+    // DeepSeek V4.1 Flash: "sync" holds only visible moves of the SUT.
+    void syncKeyIsRejectedWhereItDoesNotApply()
+    {
+        {   // a controllable transition is acknowledged as a stimulus already
+            const char *transitions =
+                R"([{"id":"t","label":"go","kind":"controllable","sync":true},)"
+                R"({"id":"u","kind":"internal"}])";
+            const LoadResult r = JsonNetLoader::loadJson(makeDoc(kPlaces, transitions, kArcs));
+            T_VERIFY(!r.ok());
+            T_VERIFY(hasIssue(r, LoadIssue::Severity::Error, "$.transitions[0].sync", "own move"));
+        }
+        {   // an untraced internal step is never seen
+            const char *transitions =
+                R"([{"id":"t","label":"go","kind":"controllable"},)"
+                R"({"id":"u","kind":"internal","sync":true}])";
+            const LoadResult r = JsonNetLoader::loadJson(makeDoc(kPlaces, transitions, kArcs));
+            T_VERIFY(!r.ok());
+            T_VERIFY(hasIssue(r, LoadIssue::Severity::Error, "$.transitions[1].sync", "visible"));
+        }
+        {   // and the value must be a boolean
+            const char *transitions =
+                R"([{"id":"t","label":"go","kind":"controllable"},)"
+                R"({"id":"u","label":"out","kind":"observable","sync":"yes"}])";
+            const LoadResult r = JsonNetLoader::loadJson(makeDoc(kPlaces, transitions, kArcs));
+            T_VERIFY(!r.ok());
+            T_VERIFY(hasIssue(r, LoadIssue::Severity::Error, "$.transitions[1].sync", "true or false"));
+        }
+    }
+
     void unsupportedVersionIsRejected()
     {
         std::string doc = makeDoc();
@@ -818,6 +883,7 @@ int main()
     T_RUN(TstJsonNetLoader, initialMarkingIsRequired);
     T_RUN(TstJsonNetLoader, missingTargetMarkingsWarns);
     T_RUN(TstJsonNetLoader, unknownKeysAreWarnings);
+    T_RUN(TstJsonNetLoader, reservedLifecycleLabelsAreParsed);  // DeepSeek V4.1 Flash
     T_RUN(TstJsonNetLoader, arclessTransitionWarns);
     T_RUN(TstJsonNetLoader, collectsSeveralErrorsInOnePass);
     T_RUN(TstJsonNetLoader, errorPolicyFieldsAreParsed);
@@ -833,6 +899,8 @@ int main()
     T_RUN(TstJsonNetLoader, commandKeyFormsAreParsed);  // GLM-5.3-Flash
     T_RUN(TstJsonNetLoader, commandValuesAreValidated);  // GLM-5.3-Flash
     T_RUN(TstJsonNetLoader, commandNeedsVisibleStep);  // GLM-5.3-Flash
+    T_RUN(TstJsonNetLoader, syncKeyIsParsed);  // DeepSeek V4.1 Flash
+    T_RUN(TstJsonNetLoader, syncKeyIsRejectedWhereItDoesNotApply);  // DeepSeek V4.1 Flash
     T_RUN(TstJsonNetLoader, unsupportedVersionIsRejected);
     T_RUN(TstJsonNetLoader, syntaxErrorReportsPosition);
     T_RUN(TstJsonNetLoader, topLevelMustBeObject);

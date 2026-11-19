@@ -45,6 +45,11 @@ namespace pn {
 struct SequencedEvent {
     std::uint64_t seq = 0;  // 0, 1, 2, ... in queue order
     SutEvent event;
+
+    // DeepSeek V4.1 Flash: the producer is holding the SUT at this event until the
+    // tracker acknowledges it (see ISutPlugin::acknowledgeEvent). The queue
+    // only carries the flag; the producer does the waiting.
+    bool needsAck = false;
 };
 
 class EventQueue {
@@ -56,8 +61,9 @@ public:
     EventQueue(const EventQueue &) = delete;
     EventQueue &operator=(const EventQueue &) = delete;
 
-    // Producer side. Thread-safe. `seq`, if given, receives the assigned number.
-    PushResult push(SutEvent event, std::uint64_t *seq = nullptr);
+    // Producer side. Thread-safe. `seq`, if given, receives the assigned
+    // number; `needsAck` marks a synchronized event the producer waits on.
+    PushResult push(SutEvent event, std::uint64_t *seq = nullptr, bool needsAck = false);
 
     // Consumer side. Non-blocking.
     bool tryPop(SequencedEvent &out);
@@ -105,6 +111,12 @@ struct PumpResult {
     // offered/taken statistics). Meaningful when processed > 0.
     EventKind lastKind = EventKind::Observed;
     std::string lastLabel;
+
+    // DeepSeek V4.1 Flash: the last processed event is a synchronized one the
+    // producer holds the SUT at: the caller acknowledges it (with
+    // acknowledgeEvent(lastAckSeq)) once it has handled all consequences.
+    bool lastNeedsAck = false;
+    std::uint64_t lastAckSeq = 0;
 };
 
 // Feeds queued events to the tracker, in order, until the queue is empty,

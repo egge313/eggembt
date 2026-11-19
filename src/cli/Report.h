@@ -44,9 +44,26 @@ void printTime(const Console &con, const pn::CampaignReport &report);
 // half of what they cover, i.e. the steering explored more than it repeated.
 void printOverlap(const Console &con, const pn::OverlapMatrix &m);
 
+// DeepSeek V4.1 Flash: the recorded trace of a run (doku section 21): the initial
+// marking, then every step in firing order. `onlyRun` is 1-based, 0 = every
+// run; `full` prints the whole trace, otherwise a long one keeps its last 20
+// steps behind a "...". Uses the run log's own `steps` (transition ids) or,
+// for event runs, the recorded events.
+void printTraces(const Console &con, const pn::Net &net, const std::vector<pn::PersistedRun> &runs,
+                 int onlyRun, bool full);
+
 // Machine-readable counterpart for CI.
-pn::JsonValue coverageJson(const pn::Net &net, const pn::CoverageDb &db);
-pn::JsonValue campaignJson(const pn::Net &net, const pn::Session &session, const pn::CampaignReport &report);
+// `elements` adds every known state and edge with its hit counts (the
+// --coverage-elements switch); the default keeps the report compact.
+pn::JsonValue coverageJson(const pn::Net &net, const pn::CoverageDb &db, bool elements = false);
+pn::JsonValue campaignJson(const pn::Net &net, const pn::Session &session, const pn::CampaignReport &report,
+                           bool coverageElements = false);
+
+// DeepSeek V4.1 Flash: the colony's pheromone, keyed readably (doku section 21):
+// per edge the source and target markings, the transition, attract, repel and
+// the static region; per (marking, T-list) pair its list and both channels.
+// Edge ids are session-local, so the JSON never mentions them.
+pn::JsonValue pheromoneJson(const pn::Net &net, const pn::Session &session);
 
 // GLM-5.3-Flash: the overlap section of a campaign report (pairwise Jaccard
 // matrices between the runs, and their means).

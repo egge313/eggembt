@@ -7,20 +7,20 @@
 //   per-place <initialMarking>s -- they are UNIONED into ONE initial marking
 //   of the model -- and the net's <name>.
 //
-// THE MBT CONVENTION for kinds and labels: a <toolspecific> child of a
-// transition with tool="mbt" (or no tool attribute):
-//     <toolspecific tool="mbt" kind="controllable|observable|internal" label="..."/>
+// THE EGGEMBT CONVENTION for kinds and labels: a <toolspecific> child of a
+// transition with tool="eggembt" (or no tool attribute):
+//     <toolspecific tool="eggembt" kind="controllable|observable|internal" label="..."/>
 //   kind sets TransitionKind, label sets the SUT action/event. Without a
 //   toolspecific, the transition id's first byte decides as a fallback:
 //   '?' -> controllable, '!' -> observable, anything else -> internal SILENT
 //   (the id is not used as a label, so a named internal step never becomes a
 //   traced one by accident). A milestone is tagged the same way, as a second
 //   toolspecific so it composes with the kind:
-//     <toolspecific tool="mbt" kind="milestone" rank="2"/>
+//     <toolspecific tool="eggembt" kind="milestone" rank="2"/>
 //   (rank >= 1, default 1; see Transition::milestone).
 //
 // WHAT IS NOT IMPORTED (reported as warnings): place bounds (<capacity>) and
-// any place toolspecific -- PNML has no mbt target or error markings, so a
+// any place toolspecific -- PNML has no eggembt target or error markings, so a
 // PNML model has none; declare those in the JSON form if needed.
 //
 // Like the JSON loader, this loader never stops at the first problem: it

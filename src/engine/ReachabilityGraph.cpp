@@ -90,6 +90,15 @@ std::size_t ReachabilityGraph::expand(StateId s)
         const Transition &t = net_.transitions[i];
         if (!isEnabled(t, scratchFrom_.data()))
             continue;
+        // DeepSeek V4.1 Flash: an engine-landed lifecycle input (a reserved label
+        // with no post arcs, doku section 26) is not a token-game move: it counts
+        // as enabled -- the state is not a dead end, the SUT can be restarted --
+        // but it creates no edge, because the engine, not the marking, supplies
+        // where it lands.
+        if (t.lifecycle != LifecycleAction::None && t.post.empty()) {
+            ++enabled;
+            continue;
+        }
         ++enabled;
 
         const auto ti = static_cast<TransitionIndex>(i);

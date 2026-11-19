@@ -79,7 +79,7 @@ inline constexpr int kHookNoExit = -1;
 // (the "command" key of the JSON, engine-side execution in Session). Status
 // words: "ok" (synchronous, exit status 0), "failed" (synchronous, non-zero
 // exit status), "timeout" (synchronous, killed at --hook-timeout), "launched"
-// (asynchronous: mbt does not wait for it). `exit` is the child's exit status
+// (asynchronous: eggembt does not wait for it). `exit` is the child's exit status
 // when known, kHookNoExit (-1, which no child can produce) otherwise; output
 // carries the captured stdout+stderr of a synchronous command, truncated.
 struct HookRecord {

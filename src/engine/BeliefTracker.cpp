@@ -140,8 +140,26 @@ void BeliefTracker::beginRun(std::size_t initialMarkingIndex, std::string note)
         endRun(RunOutcome::Aborted, "superseded by a new run");
 
     const StateId init = rg_.addInitial(initialMarkingIndex);
+    initialIndex_ = initialMarkingIndex;
+    initialState_ = init;
     if (db_)
         db_->beginRun(init, std::move(note), /*creditInitial=*/false);
+
+    // DeepSeek V4.1 Flash: a model whose start/restart is engine-landed (no post
+    // arcs, doku section 26) declares that the SUT is brought up by its own
+    // control: every run begins with the gate down, so the campaign presses
+    // that control before it tests anything. Without such an input the run
+    // begins running, as it always did.
+    gate_ = LifecycleGate::Running;
+    pausedBelief_.clear();
+    for (const Transition &t : net_.transitions) {
+        if (t.kind == TransitionKind::Controllable
+            && (t.lifecycle == LifecycleAction::Start || t.lifecycle == LifecycleAction::Restart)
+            && t.post.empty()) {
+            gate_ = LifecycleGate::Down;
+            break;
+        }
+    }
 
     Layer base;
     base.states = closure({init}, base.silentEdges);
@@ -247,7 +265,10 @@ StepResult BeliefTracker::onEvent(const SutEvent &ev)
         result = handleLabelEvent(ev, true);
         break;
     case EventKind::Quiescent:
-        result = handleQuiescence();
+        // DeepSeek V4.1 Flash: a paused or down SUT is expected to be silent
+        // (doku section 26): no narrowing, no deadlock verdict, no deviation.
+        if (gate_ == LifecycleGate::Running)
+            result = handleQuiescence();
         break;
     case EventKind::Died:
         // GLM-5.3-Flash: the SUT is gone. No step to reason about; the session
@@ -328,16 +349,27 @@ StepResult BeliefTracker::handleLabelEvent(const SutEvent &ev, bool stimulus)
                        "observed \"" + ev.label + "\", which the model does not know", true, nullptr);
     }
 
-    Applied a = applyMatching(it->second);
+    // DeepSeek V4.1 Flash: a stimulus carrying a reserved lifecycle label is not
+    // an ordinary model step (doku section 26).
+    if (stimulus && net_.transitions[it->second.front()].lifecycle != LifecycleAction::None)
+        return handleLifecycle(ev, it->second);
+
+    return applyStimulusMatching(ev, stimulus, it->second);
+}
+
+StepResult BeliefTracker::applyStimulusMatching(const SutEvent &ev, bool stimulus,
+                                                const std::vector<TransitionIndex> &matching)
+{
+    Applied a = applyMatching(matching);
     if (a.eventEdges.empty()) {
         if (stimulus)
             return failure(StepStatus::Preempted,
                            "stimulus \"" + ev.label + "\" is not enabled in any possible state; "
                            "a silent step probably got there first",
-                           false, &it->second);
+                           false, &matching);
         return failure(StepStatus::Deviation,
                        "observed \"" + ev.label + "\", which is not possible in any possible state",
-                       true, &it->second);
+                       true, &matching);
     }
 
     // GLM-5.3-Flash: the step is CERTAIN when every possible state advanced by
@@ -345,7 +377,7 @@ StepResult BeliefTracker::handleLabelEvent(const SutEvent &ev, bool stimulus)
     // exploration limits (state cap, place bound). Only then does the tester
     // know exactly which transition fired -- the hook the error-transition
     // tag (Session) builds on. belief_ is still the pre-event belief here.
-    if (a.eventEdges.size() == belief_.size() && !enabledButDropped(it->second)) {
+    if (a.eventEdges.size() == belief_.size() && !enabledButDropped(matching)) {
         const TransitionIndex fired = rg_.edge(a.eventEdges.front().edge).transition;
         const bool same = std::all_of(a.eventEdges.begin(), a.eventEdges.end(),
                                       [this, fired](const EventEdge &e) {
@@ -402,6 +434,145 @@ StepResult BeliefTracker::handleQuiescence()
         return r;
     }
     return {};
+}
+
+// DeepSeek V4.1 Flash: the engine's landing for a lifecycle input without post
+// arcs (doku section 26). The step is a gap in the path -- no RG edge leads to
+// the landing -- so the path so far is credited first, the lifecycle transition
+// is credited on its own, and the same run continues from the landing as a
+// definite visit. `creditDefinite(state, kNoEdge)` is the CoverageDb's
+// documented way to say exactly that.
+void BeliefTracker::landAt(StateId state, TransitionIndex via)
+{
+    if (!active_ || state == kNoState)
+        return;
+    settle(true);
+    if (db_ && via != kNoTransition)
+        db_->creditTransition(via);
+
+    Layer base;
+    base.states = closure({state}, base.silentEdges);
+    belief_ = base.states;
+    segment_.clear();
+    segment_.push_back(std::move(base));
+    segmentStart_ = state;
+    baseCredited_ = true;
+    if (db_)
+        db_->creditDefinite(state, kNoEdge);
+    bool fresh = false;
+    markVisited(fresh);  // a landing is progress for the livelock watch
+}
+
+StepResult BeliefTracker::handleLifecycle(const SutEvent &ev, const std::vector<TransitionIndex> &matching)
+{
+    const LifecycleAction action = net_.transitions[matching.front()].lifecycle;
+
+    // The tester sent the label because the suggestion said the model allows
+    // it; the event may still be preempted (a guard changed with an earlier
+    // event), exactly like an ordinary stimulus.
+    TransitionIndex chosen = kNoTransition;
+    for (TransitionIndex t : matching) {
+        for (StateId s : belief_) {
+            if (isEnabled(net_.transitions[t], rg_.tokens(s))) {
+                chosen = t;
+                break;
+            }
+        }
+        if (chosen != kNoTransition)
+            break;
+    }
+    if (chosen == kNoTransition)
+        return failure(StepStatus::Preempted,
+                       "stimulus \"" + ev.label + "\" is not enabled in any possible state", false,
+                       &matching);
+
+    certainStep_ = chosen;
+    const Transition &tr = net_.transitions[chosen];
+    // Post arcs say where the model lands; without them the engine supplies
+    // the landing (start/restart: the run's beginning, resume: where the pause
+    // suspended the SUT), and the token game gives the transition no edge.
+    const bool modelLands = !tr.post.empty();
+
+    if (action == LifecycleAction::Pause)
+        pausedBelief_ = belief_;  // the state an engine-landed resume comes back to
+
+    if (modelLands) {
+        const StepResult r = applyStimulusMatching(ev, /*stimulus=*/true, {chosen});
+        if (r.status != StepStatus::Ok)
+            return r;
+        certainStep_ = chosen;
+    }
+
+    if (!modelLands) {
+        switch (action) {
+        case LifecycleAction::Start:
+        case LifecycleAction::Restart:
+            landAt(initialState_, chosen);  // credits the transition
+            break;
+        case LifecycleAction::Resume:
+            if (pausedBelief_.size() == 1)
+                landAt(pausedBelief_.front(), chosen);
+            else if (db_)
+                db_->creditTransition(chosen);
+            break;
+        case LifecycleAction::Stop:
+        case LifecycleAction::Pause:
+        case LifecycleAction::None:
+            if (db_)
+                db_->creditTransition(chosen);
+            break;
+        }
+    }
+
+    switch (action) {
+    case LifecycleAction::Start:
+    case LifecycleAction::Restart:
+        gate_ = LifecycleGate::Running;
+        pausedBelief_.clear();
+        break;
+    case LifecycleAction::Stop:
+        gate_ = LifecycleGate::Down;
+        pausedBelief_.clear();
+        break;
+    case LifecycleAction::Pause:
+        gate_ = LifecycleGate::Paused;
+        break;
+    case LifecycleAction::Resume:
+        gate_ = LifecycleGate::Running;
+        pausedBelief_.clear();
+        break;
+    case LifecycleAction::None:
+        break;
+    }
+    return {};
+}
+
+// DeepSeek V4.1 Flash: which lifecycle input the campaign should send now. The
+// order is the way back: resume before stop/restart while paused, start before
+// restart while down. Only a transition the guards enable in some belief state
+// qualifies; with post arcs it is an ordinary model step and the suggestion
+// still works.
+TransitionIndex BeliefTracker::suggestedLifecycle() const
+{
+    if (gate_ == LifecycleGate::Running)
+        return kNoTransition;
+    static constexpr LifecycleAction kPaused[] = {LifecycleAction::Resume, LifecycleAction::Stop,
+                                                  LifecycleAction::Restart};
+    static constexpr LifecycleAction kDown[] = {LifecycleAction::Start, LifecycleAction::Restart};
+    const LifecycleAction *order = gate_ == LifecycleGate::Down ? kDown : kPaused;
+    const std::size_t count = gate_ == LifecycleGate::Down ? 2 : 3;
+    for (std::size_t i = 0; i < count; ++i) {
+        for (std::size_t t = 0; t < net_.transitions.size(); ++t) {
+            const Transition &tr = net_.transitions[t];
+            if (tr.kind != TransitionKind::Controllable || tr.lifecycle != order[i])
+                continue;
+            for (StateId s : belief_) {
+                if (isEnabled(tr, rg_.tokens(s)))
+                    return static_cast<TransitionIndex>(t);
+            }
+        }
+    }
+    return kNoTransition;
 }
 
 bool BeliefTracker::anyEnabled(StateId s, bool onlyOutputAndInternal) const
@@ -534,6 +705,22 @@ std::vector<ControllableCandidate> BeliefTracker::enabledControllable() const
         const Transition &t = net_.transitions[i];
         if (t.kind != TransitionKind::Controllable)
             continue;
+        // DeepSeek V4.1 Flash: the gate decides what may be sent (doku section 26).
+        // While paused or down only lifecycle inputs are offered -- and only the
+        // ones that lead back; an engine-landed lifecycle input is not an
+        // ordinary move while running (its landing is the engine's, so the
+        // gate, not the suggester's goal search, brings it up).
+        if (gate_ == LifecycleGate::Down) {
+            if (t.lifecycle != LifecycleAction::Start && t.lifecycle != LifecycleAction::Restart)
+                continue;
+        } else if (gate_ == LifecycleGate::Paused) {
+            if (t.lifecycle != LifecycleAction::Resume && t.lifecycle != LifecycleAction::Stop
+                && t.lifecycle != LifecycleAction::Restart)
+                continue;
+        } else {
+            if (t.lifecycle != LifecycleAction::None && t.post.empty())
+                continue;
+        }
         std::size_t count = 0;
         for (StateId s : belief_)
             if (isEnabled(t, rg_.tokens(s)))

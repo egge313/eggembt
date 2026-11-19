@@ -234,6 +234,18 @@ public:
     std::size_t tlistLength() const { return cfg_.tlistLength; }
     std::size_t pairCount() const { return pairs_.size(); }
 
+    // DeepSeek V4.1 Flash: the pair store as readable rows, for the pheromone dump
+    // (--dump-pheromone, doku section 21). Sorted by (state, list), so the
+    // file does not depend on the hash order. `tlist` is the key in full; only
+    // the first tlistLength() elements are meaningful.
+    struct PairEntry {
+        StateId state = kNoState;
+        std::array<std::uint32_t, kMaxTList> tlist{};
+        double attract = 0.0;
+        double repel = 0.0;
+    };
+    std::vector<PairEntry> pairEntries() const;
+
     const AntStats &stats() const { return stats_; }
     const TargetBoard &targets() const { return board_; }
 

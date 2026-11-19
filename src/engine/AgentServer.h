@@ -7,6 +7,13 @@
 // the plug-in, and forwards the plug-in's events to the tracker as `event`
 // messages, stamped with the run number of the current run, in the order the
 // plug-in pushed them. It says hello when started.
+//
+// Synchronized events (DeepSeek V4.1 Flash, doku section 19). The server passes
+// start_run's sync_labels to the plug-in's run options, numbers every event of
+// a run (0, 1, 2, ...) and marks the ones the plug-in holds the SUT at with
+// "sync": true. An "ack" from the tracker is translated back to the plug-in's
+// queue sequence and handed to acknowledgeEvent(). The plug-in declares the
+// capability in hello.
 #pragma once
 
 #include "engine/EventQueue.h"
@@ -17,6 +24,8 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
+#include <map>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -25,7 +34,7 @@ namespace pn {
 
 class AgentServer {
 public:
-    AgentServer(ISutPlugin &sut, ILineTransport &transport, std::string name = "mbt-agent");
+    AgentServer(ISutPlugin &sut, ILineTransport &transport, std::string name = "eggembt-agent");
     ~AgentServer();
 
     AgentServer(const AgentServer &) = delete;
@@ -55,6 +64,12 @@ private:
     std::thread forwarder_;
     std::mutex mutex_;
     std::condition_variable done_;
+
+    // DeepSeek V4.1 Flash: the per-run wire numbers of forwarded events and the
+    // held ones' local queue sequences (what acknowledgeEvent needs).
+    std::mutex state_;
+    std::int64_t nextEventSeq_ = 0;
+    std::map<std::int64_t, std::uint64_t> ackSeqs_;
 };
 
 }  // namespace pn

@@ -16,7 +16,7 @@ std::string headerLine(const std::string &fingerprint)
 {
     JsonValue o = JsonValue::object();
     o.set("type", JsonValue::string("header"));
-    o.set("format", JsonValue::string("mbt-runlog"));
+    o.set("format", JsonValue::string("eggembt-runlog"));
     o.set("version", JsonValue::number(kFormatVersion));
     o.set("graph", JsonValue::string(fingerprint));
     return o.dump() + "\n";
@@ -198,8 +198,11 @@ bool parseHeader(const std::string &line, std::string &graph, std::string *err)
         *err = "first line is not a valid header";
         return false;
     }
-    if (stringOf(o, "type") != "header" || stringOf(o, "format") != "mbt-runlog") {
-        *err = "not an mbt run log";
+    // DeepSeek V4.1 Flash: logs written before the rename say "mbt-runlog"; they
+    // are still readable, new logs use the new tag.
+    const std::string format = stringOf(o, "format");
+    if (stringOf(o, "type") != "header" || (format != "eggembt-runlog" && format != "mbt-runlog")) {
+        *err = "not an eggembt run log";
         return false;
     }
     const JsonValue *version = o.find("version");

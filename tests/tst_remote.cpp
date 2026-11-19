@@ -257,6 +257,43 @@ static void testProtocolRoundTrips()
         m.reason.clear();
         CHECK(roundTrip(m).reason == "finished");  // the default
     }
+    // DeepSeek V4.1 Flash: the synchronized-event fields (doku section 19).
+    {
+        ProtocolMessage m;
+        m.type = T::Hello;
+        m.name = "sync-agent";
+        m.syncCapable = true;
+        const ProtocolMessage b = roundTrip(m);
+        CHECK(b.syncCapable && b.name == "sync-agent");
+    }
+    {
+        ProtocolMessage m;
+        m.type = T::StartRun;
+        m.run = 4;
+        m.initial = "start";
+        m.syncLabels = {"out", "tick"};
+        const ProtocolMessage b = roundTrip(m);
+        CHECK(b.run == 4 && b.syncLabels == m.syncLabels);
+    }
+    {
+        ProtocolMessage m;
+        m.type = T::Event;
+        m.run = 4;
+        m.kind = EventKind::Observed;
+        m.label = "out";
+        m.seq = 9;
+        m.syncEvent = true;
+        const ProtocolMessage b = roundTrip(m);
+        CHECK(b.run == 4 && b.seq == 9 && b.syncEvent && b.label == "out");
+    }
+    {
+        ProtocolMessage m;
+        m.type = T::Ack;
+        m.run = 4;
+        m.seq = 9;
+        const ProtocolMessage b = roundTrip(m);
+        CHECK(b.run == 4 && b.seq == 9);
+    }
     {
         ProtocolMessage m;
         m.type = T::Shutdown;
@@ -393,6 +430,67 @@ struct Rig {
         agent.reset();
     }
 };
+
+// DeepSeek V4.1 Flash: a synchronized observable step (doku section 19).
+static Net makeSyncNet()
+{
+    NetBuilder b;
+    const auto s0 = b.place("s0");
+    const auto s1 = b.place("s1");
+    const auto s2 = b.place("s2");
+    const auto go = b.transition("go", TransitionKind::Controllable, "go");
+    const auto out = b.transition("out", TransitionKind::Observable, "out");
+    b.input(s0, go).output(go, s1);
+    b.input(s1, out).output(out, s2);
+    b.initial("start", {{s0, 1}});
+    b.targetMarking("done", {{s2, 1}});
+    b.sync(out);
+    return b.build();
+}
+
+// DeepSeek V4.1 Flash: the ack must be on the wire when runOnce() returns. The
+// plug-in waits for its own mapping (RemotePlugin::acknowledgeEvent) instead
+// of dropping a lookup that the pushing thread had not registered yet; this
+// rig delivers synchronously, so the SUT is released before the run ends.
+static void testSynchronizedEventsTravelOverTheProtocol()
+{
+    const Net net = makeSyncNet();
+    Rig rig(net, FakeSutOptions{});
+    CHECK(rig.plugin->waitForHello(std::chrono::milliseconds(1000)));
+    CHECK(rig.plugin->capabilities().eventAcks);  // hello advertised it
+
+    SessionConfig cfg = quick();
+    cfg.syncEvents = true;
+    cfg.maxRuns = 1;
+    Session session(net, cfg);
+    const RunReport r = session.runOnce(*rig.plugin);
+    CHECK(r.outcome == RunOutcome::Completed);
+    CHECK(rig.sut.acknowledgements() == 1);  // the wire ack reached the SUT
+    CHECK(!rig.sut.holding());
+}
+
+static void testAnAgentWithoutTheAckCapabilityIsNoted()
+{
+    const Net net = makeSyncNet();
+    FakeSutOptions opt;
+    opt.eventAcks = false;  // hello will say "sync": false
+    Rig rig(net, opt);
+    CHECK(rig.plugin->waitForHello(std::chrono::milliseconds(1000)));
+    CHECK(!rig.plugin->capabilities().eventAcks);
+
+    SessionConfig cfg = quick();
+    cfg.syncEvents = true;
+    cfg.maxRuns = 1;
+    Session session(net, cfg);
+    const RunReport r = session.runOnce(*rig.plugin);
+    CHECK(r.outcome == RunOutcome::Completed);
+    CHECK(rig.sut.acknowledgements() == 0);
+    bool noted = false;
+    for (const std::string &n : r.notes)
+        if (contains(n, "cannot acknowledge events"))
+            noted = true;
+    CHECK(noted);
+}
 
 static void testHelloCarriesTheCapabilities()
 {
@@ -626,6 +724,8 @@ int main()
         {"faultsAndGarbageFromTheAgent", testFaultsAndGarbageFromTheAgent},
         {"theQueueMayBeDestroyedRightAfterStopRun", testTheQueueMayBeDestroyedRightAfterStopRun},
         {"lateEventsOfAnEarlierRunAreDropped", testLateEventsOfAnEarlierRunAreDropped},
+        {"synchronizedEventsTravelOverTheProtocol", testSynchronizedEventsTravelOverTheProtocol},  // DeepSeek V4.1 Flash
+        {"anAgentWithoutTheAckCapabilityIsNoted", testAnAgentWithoutTheAckCapabilityIsNoted},  // DeepSeek V4.1 Flash
     };
     for (const auto &t : tests) {
         const int before = g_failures;

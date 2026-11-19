@@ -1,11 +1,12 @@
 cmake_minimum_required(VERSION 3.16)
-project(Eggetest LANGUAGES CXX)
+project(eggembt LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-set(MBT_VERSION "1.0.0")
+# DeepSeek V4.1 Flash: the product version lives in src/Version.h, where it follows
+# the git branch (doku section 20); the build no longer defines it.
 
 find_package(Threads REQUIRED)
 
@@ -96,9 +97,10 @@ add_library(mbt_agent STATIC
 target_include_directories(mbt_agent PUBLIC src)
 target_link_libraries(mbt_agent PUBLIC mbt_engine)
 
-# The `mbt` command line tool: check, explore, run, report, agent-sim.
-add_executable(mbt
+# The `eggembt` command line tool: check, explore, run, report, agent-sim.
+add_executable(eggembt
     src/main.cpp
+    src/Version.h
     src/cli/Commands.h
     src/cli/Commands.cpp
     src/cli/Report.h
@@ -106,22 +108,39 @@ add_executable(mbt
     src/cli/Args.h
     src/cli/Console.h
 )
-target_link_libraries(mbt PRIVATE mbt_agent mbt_core)
-target_compile_definitions(mbt PRIVATE MBT_VERSION="${MBT_VERSION}")
+target_link_libraries(eggembt PRIVATE mbt_agent mbt_core)
 
 # GLM-5.3-Flash: the reference agent shim for C++ SUTs (doku section 12,
 # item 7): a hand-written SUT wrapped in ISutPlugin + AgentServer, spawned by
-# 'mbt run --agent' in the cli tests.
+# 'eggembt run --agent' in the cli tests.
 add_executable(ref-agent examples/agents/ref_agent.cpp)
 target_link_libraries(ref-agent PRIVATE mbt_agent)
 
 # Engine tests (plain C++, no Qt, no network at run time)
 foreach(t tst_engine tst_coverage tst_belief tst_livelock tst_suggest tst_ants tst_async tst_overlap tst_crash)
+    # DeepSeek V4.1 Flash: tst_pheromone is added below (it needs a plug-in, hence mbt_engine
+    # only -- the synchronous benchmark SUT is local to the test, no agent library).
     add_executable(${t} tests/${t}.cpp)
     target_include_directories(${t} PRIVATE tests)
     target_link_libraries(${t} PRIVATE mbt_engine)
     add_test(NAME ${t} COMMAND ${t})
 endforeach()
+
+# DeepSeek V4.1 Flash: the pheromone benchmark (doku section 25): a 1000-state
+# model with a crashing shortcut at every run's start, run without the colony,
+# with the edge pheromone alone, and with the (marking, T-list) pair layer.
+add_executable(tst_pheromone tests/tst_pheromone.cpp)
+target_include_directories(tst_pheromone PRIVATE tests)
+target_link_libraries(tst_pheromone PRIVATE mbt_engine)
+add_test(NAME tst_pheromone COMMAND tst_pheromone)
+
+# DeepSeek V4.1 Flash: the reserved lifecycle labels (doku section 26): the
+# engine-landed start/restart/resume, the pause/down gate, and the campaign
+# that presses the model's own start before it tests anything.
+add_executable(tst_lifecycle tests/tst_lifecycle.cpp)
+target_include_directories(tst_lifecycle PRIVATE tests)
+target_link_libraries(tst_lifecycle PRIVATE mbt_agent)  # the campaign test drives SimulatedSut
+add_test(NAME tst_lifecycle COMMAND tst_lifecycle)
 
 # Session and remote tests drive the simulated SUT plug-in.
 foreach(t tst_session tst_remote)
@@ -159,10 +178,17 @@ target_compile_definitions(tst_pnml PRIVATE
     EXAMPLES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/examples")
 add_test(NAME tst_pnml COMMAND tst_pnml)
 
+# DeepSeek V4.1 Flash: installing the two programs (INSTALL.md). The product is the
+# command-line tool; ref-agent is the reference agent shim, useful to check a
+# fresh install against a SUT without writing one. The internal static
+# libraries are not installed -- nothing outside links against them.
+include(GNUInstallDirs)
+install(TARGETS eggembt ref-agent RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
 # End-to-end tests of the tool: real processes, pipes and sockets.
 add_test(NAME cli_test
     COMMAND ${CMAKE_COMMAND} -E env
-        "MBT=$<TARGET_FILE:mbt>"
+        "EGGEMBT=$<TARGET_FILE:eggembt>"
         "EXAMPLES=${CMAKE_CURRENT_SOURCE_DIR}/examples"
         "REF_AGENT=$<TARGET_FILE:ref-agent>"
         sh ${CMAKE_CURRENT_SOURCE_DIR}/cli_test.sh)

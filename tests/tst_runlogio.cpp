@@ -232,7 +232,7 @@ struct TstRunLogIO {
     {
         TempDir dir;
         dir.append("runs.jsonl",
-                   "{\"type\":\"header\",\"format\":\"mbt-runlog\",\"version\":1,\"graph\":\"x\"}\n"
+                   "{\"type\":\"header\",\"format\":\"eggembt-runlog\",\"version\":1,\"graph\":\"x\"}\n"
                    "{\"type\":\"run\",\"init\n"
                    "{\"type\":\"run\",\"initial\":\"s\",\"steps\":[],\"outcome\":\"completed\"}\n");
         const RunLogReadResult r = readRunLog(dir.filePath("runs.jsonl"));
@@ -247,7 +247,7 @@ struct TstRunLogIO {
         T_VERIFY(!readRunLog(dir.filePath("garbage.jsonl")).ok);
 
         dir.append("bad.jsonl",
-                   "{\"type\":\"header\",\"format\":\"mbt-runlog\",\"version\":1,\"graph\":\"x\"}\n"
+                   "{\"type\":\"header\",\"format\":\"eggembt-runlog\",\"version\":1,\"graph\":\"x\"}\n"
                    "{\"type\":\"run\",\"initial\":\"s\",\"steps\":[],\"outcome\":\"open\"}\n"
                    "{\"type\":\"run\",\"initial\":\"s\",\"steps\":[],\"outcome\":\"completed\"}\n");
         const RunLogReadResult r = readRunLog(dir.filePath("bad.jsonl"));

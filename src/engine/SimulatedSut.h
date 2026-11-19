@@ -1,6 +1,6 @@
 // A SUT that behaves exactly as its model says, simulated on its own thread, as
-// a plug-in. It is useful to try a model before a real SUT exists (`mbt run
-// --simulate`, `mbt agent-sim`), as a reference for plug-in authors, and in the
+// a plug-in. It is useful to try a model before a real SUT exists (`eggembt run
+// --simulate`, `eggembt agent-sim`), as a reference for plug-in authors, and in the
 // tests. Switches make it misbehave in the ways a Session has to cope with.
 //
 // How it behaves: inputs are applied when they arrive (or after `ackDelayMs`),
@@ -28,6 +28,7 @@
 #include <cstdint>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <random>
 #include <string>
 #include <thread>
@@ -60,6 +61,11 @@ struct SimulatedSutOptions {
     // reason in the label, and stays down for the rest of the run.
     std::map<std::string, double> crashAt;
     int crashAfterEvents = -1;
+
+    // DeepSeek V4.1 Flash: whether the simulated SUT can hold itself at a
+    // synchronized event and wait for the tracker's ack (doku section 19).
+    // Off models an agent/plug-in without the capability.
+    bool eventAcks = true;
 };
 
 class SimulatedSut : public ISutPlugin {
@@ -74,6 +80,7 @@ public:
     PostMortem postMortem(DumpMode mode) override;
     void stopRun(StopReason reason) override;
     std::string pollFault() override;
+    void acknowledgeEvent(std::uint64_t queueSeq) override;  // DeepSeek V4.1 Flash
 
     // Introspection and fault injection, mainly for tests.
     void setFault(const std::string &text);
@@ -81,6 +88,14 @@ public:
     std::vector<DumpMode> dumpModes() const;
     bool crashed() const;
     int stopCalls() const { return stopCalls_; }
+
+    // DeepSeek V4.1 Flash: synchronization introspection (doku section 19): how many
+    // held events were released, whether the SUT is waiting right now, and
+    // whether a post-mortem was taken while it was still held (the reason the
+    // feature exists: the stack must not move under the dump).
+    std::uint64_t acknowledgements() const;
+    bool holding() const;
+    bool dumpSawHeldEvent() const;
 
 private:
     struct PendingStim {
@@ -90,7 +105,14 @@ private:
 
     void halt();
     std::int64_t stamp();
-    void push(EventKind kind, const std::string &label);  // callers hold m_
+    // DeepSeek V4.1 Flash: pushes the event; when it is a synchronized one and
+    // `hold` is set, the caller must then call waitForAck() (it returns the
+    // queue sequence). Callers hold m_.
+    std::optional<std::uint64_t> push(EventKind kind, const std::string &label, bool hold = true);
+    // DeepSeek V4.1 Flash: releases m_ while the SUT is held at `seq` until
+    // acknowledgeEvent() or the end of the run.
+    void waitForAck(std::unique_lock<std::mutex> &lock, std::uint64_t seq);
+    bool isSyncLabel(const std::string &label) const;
     void applyStimulus(const std::string &label);         // callers hold m_
     double weightOf(const Transition &t) const;
     void loop();
@@ -100,9 +122,18 @@ private:
 
     mutable std::mutex m_;
     std::thread worker_;
+    // DeepSeek V4.1 Flash: the run's initial marking (dense), the landing of an
+    // engine-landed lifecycle start/restart (doku section 26).
+    Marking initialMarking_;
     bool stop_ = false;
     bool crashed_ = false;
     bool quiescentSent_ = false;
+    // DeepSeek V4.1 Flash: synchronized events (doku section 19).
+    std::vector<std::string> syncLabels_;
+    std::condition_variable ackCv_;
+    std::optional<std::uint64_t> waitingAck_;  // the event the SUT is held at
+    std::uint64_t acks_ = 0;
+    bool dumpSawHeld_ = false;
     bool deviated_ = false;
     int eventsPushed_ = 0;
     int dumps_ = 0;

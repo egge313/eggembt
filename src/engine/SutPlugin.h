@@ -39,12 +39,23 @@ struct PluginCapabilities {
     bool snapshot = false;
     bool crash = false;
     std::int64_t restartMs = 0;  // typical time to restart the SUT (informational)
+
+    // DeepSeek V4.1 Flash: the plug-in can HOLD the SUT at a synchronized event and
+    // wait for acknowledgeEvent() (doku section 19). Agents advertise this in
+    // their hello; a run that needs it but cannot get it says so in a note.
+    bool eventAcks = false;
 };
 
 struct PluginRunOptions {
     // Silence for this long, with no event from the SUT, makes the plug-in push
     // a Quiescent event.
     std::int64_t quiescenceTimeoutMs = 1000;
+
+    // DeepSeek V4.1 Flash: the labels of the model's synchronized transitions (doku
+    // section 19). After pushing an Observed event with one of these labels the
+    // plug-in must hold the SUT at that point until the tracker calls
+    // acknowledgeEvent(). Empty: no event is held.
+    std::vector<std::string> syncLabels;
 };
 
 struct PostMortem {
@@ -72,6 +83,12 @@ public:
     // Hands an input to the SUT. Returns false if it could not be handed over.
     // The matching Stimulated event is pushed when the input is actually sent.
     virtual bool stimulate(const std::string &label, std::string *error) = 0;
+
+    // DeepSeek V4.1 Flash: the tracker handled the event with this EventQueue
+    // sequence number and the SUT may continue (doku section 19). Only
+    // meaningful for an event pushed with the ack flag; a plug-in without the
+    // eventAcks capability keeps the default no-op.
+    virtual void acknowledgeEvent(std::uint64_t queueSeq) { (void)queueSeq; }
 
     // Takes a post-mortem; may take a while. After Crash the SUT is gone.
     virtual PostMortem postMortem(DumpMode mode) = 0;

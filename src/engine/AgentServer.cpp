@@ -29,6 +29,7 @@ void AgentServer::start()
     hello.snapshot = caps.snapshot;
     hello.crash = caps.crash;
     hello.restartMs = caps.restartMs;
+    hello.syncCapable = caps.eventAcks;  // DeepSeek V4.1 Flash
     send(hello);
     forwarder_ = std::thread([this] { forward(); });
 }
@@ -69,9 +70,15 @@ void AgentServer::onLine(const std::string &line)
     switch (m.type) {
     case T::StartRun: {
         run_ = m.run;
+        {
+            std::lock_guard<std::mutex> lock(state_);  // DeepSeek V4.1 Flash: new run, new event numbers
+            nextEventSeq_ = 0;
+            ackSeqs_.clear();
+        }
         local_.reset();
         PluginRunOptions options;
         options.quiescenceTimeoutMs = m.quiescenceMs > 0 ? m.quiescenceMs : options.quiescenceTimeoutMs;
+        options.syncLabels = m.syncLabels;  // DeepSeek V4.1 Flash
         ProtocolMessage reply;
         reply.type = T::RunStarted;
         reply.ok = sut_.startRun(m.initial, options, local_, &reply.error);
@@ -99,6 +106,24 @@ void AgentServer::onLine(const std::string &line)
         reply.files = pm.files;
         reply.stack = pm.stackText;
         send(reply);
+        break;
+    }
+    case T::Ack: {  // DeepSeek V4.1 Flash: the tracker handled a held event
+        if (m.run != run_)
+            break;  // a late ack of an earlier run
+        std::uint64_t queueSeq = 0;
+        bool found = false;
+        {
+            std::lock_guard<std::mutex> lock(state_);
+            const auto it = ackSeqs_.find(m.seq);
+            if (it != ackSeqs_.end()) {
+                queueSeq = it->second;
+                ackSeqs_.erase(it);
+                found = true;
+            }
+        }
+        if (found)
+            sut_.acknowledgeEvent(queueSeq);
         break;
     }
     case T::StopRun:
@@ -138,6 +163,15 @@ void AgentServer::forward()
             m.kind = e.event.kind;
             m.label = e.event.label;
             m.timestampMs = e.event.timestampMs;
+            {
+                // DeepSeek V4.1 Flash: number the events of the run and remember
+                // which local sequence a held event's ack must wake.
+                std::lock_guard<std::mutex> lock(state_);
+                m.seq = nextEventSeq_++;
+                m.syncEvent = e.needsAck;
+                if (e.needsAck)
+                    ackSeqs_[m.seq] = e.seq;
+            }
             send(m);
         }
     }

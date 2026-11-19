@@ -1,6 +1,6 @@
 // JSON-lines run log: one header line, then one line per finished run.
 //
-//   {"type":"header","format":"mbt-runlog","version":1,"graph":"<fingerprint>"}
+//   {"type":"header","format":"eggembt-runlog","version":1,"graph":"<fingerprint>"}
 //   {"type":"run","initial":"start","steps":["open_cmd",...],"outcome":"completed", ...}
 //   {"type":"run","initial":"start","steps":[],"events":[{"kind":"stimulated","label":"door.open","t":12},...],...}
 //

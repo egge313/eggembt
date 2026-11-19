@@ -41,8 +41,16 @@ void RemotePlugin::onLine(const std::shared_ptr<Shared> &shared, const std::stri
             }
         }
         if (queue) {
-            queue->push(SutEvent{m.kind, m.label, m.timestampMs});
+            // DeepSeek V4.1 Flash: an event the agent is holding the SUT at keeps
+            // the ack requirement; the mapping queue seq -> wire seq lets
+            // acknowledgeEvent() answer with the number the agent knows.
+            std::uint64_t qseq = 0;
+            const bool pushed =
+                queue->push(SutEvent{m.kind, m.label, m.timestampMs}, &qseq, m.syncEvent)
+                == EventQueue::PushResult::Ok;
             std::lock_guard<std::mutex> lock(shared->mutex);
+            if (pushed && m.syncEvent && shared->events == queue)
+                shared->pendingAcks[qseq] = {m.run, m.seq};
             --shared->pushing;
             shared->changed.notify_all();
         }
@@ -60,6 +68,7 @@ void RemotePlugin::onLine(const std::shared_ptr<Shared> &shared, const std::stri
         shared->caps.snapshot = m.snapshot;
         shared->caps.crash = m.crash;
         shared->caps.restartMs = m.restartMs;
+        shared->caps.eventAcks = m.syncCapable;  // DeepSeek V4.1 Flash
         break;
     case T::RunStarted:
         shared->startAnswered = true;
@@ -124,10 +133,12 @@ bool RemotePlugin::startRun(const std::string &initialMarking, const PluginRunOp
     m.type = ProtocolMessage::Type::StartRun;
     m.initial = initialMarking;
     m.quiescenceMs = options.quiescenceTimeoutMs;
+    m.syncLabels = options.syncLabels;  // DeepSeek V4.1 Flash: labels the agent holds at
     {
         std::lock_guard<std::mutex> lock(shared_->mutex);
         shared_->events = &events;  // events may follow the start at once
         m.run = ++shared_->run;
+        shared_->pendingAcks.clear();  // DeepSeek V4.1 Flash: new run, new event numbers
         shared_->startAnswered = false;
         shared_->startOk = false;
         shared_->startError.clear();
@@ -198,10 +209,60 @@ PostMortem RemotePlugin::postMortem(DumpMode mode)
     return result;
 }
 
+void RemotePlugin::acknowledgeEvent(std::uint64_t queueSeq)
+{
+    // DeepSeek V4.1 Flash: translate the queue sequence back to the agent's wire
+    // sequence and let it go on. A no-op for events that need no ack (and
+    // after the run ended: then stop_run releases the SUT instead).
+    //
+    // The mapping is registered by onLine() just AFTER it pushed the event --
+    // and that push is what wakes the Session. So the Session can arrive here
+    // before the pushing thread has written pendingAcks, and a plain lookup
+    // would drop the ack while the SUT waits for it (found in a Release build:
+    // the run ended "coverage complete" and the SUT stayed unacknowledged).
+    // Wait on the same condition variable for the mapping that is provably
+    // coming: onLine() notifies changed right after registering it, and a run
+    // that ends first clears events and notifies as well -- then stop_run is
+    // the release, exactly as for any run that ends at a held event.
+    std::int64_t run = 0;
+    std::int64_t wireSeq = 0;
+    bool found = false;
+    {
+        std::unique_lock<std::mutex> lock(shared_->mutex);
+        shared_->changed.wait(lock, [&] {
+            return shared_->pendingAcks.count(queueSeq) > 0 || shared_->events == nullptr
+                   || shared_->shuttingDown || !shared_->fault.empty();
+        });
+        const auto it = shared_->pendingAcks.find(queueSeq);
+        if (it != shared_->pendingAcks.end()) {
+            run = it->second.first;
+            wireSeq = it->second.second;
+            shared_->pendingAcks.erase(it);
+            found = shared_->events != nullptr;
+        }
+    }
+    if (!found)
+        return;
+    ProtocolMessage m;
+    m.type = ProtocolMessage::Type::Ack;
+    m.run = run;
+    m.seq = wireSeq;
+    if (!transport_.sendLine(encodeMessage(m))) {
+        std::lock_guard<std::mutex> lock(shared_->mutex);
+        if (shared_->fault.empty())
+            shared_->fault = "the connection to the agent was gone when an event had to be acknowledged";
+        shared_->changed.notify_all();
+    }
+}
+
 void RemotePlugin::detachEvents()
 {
     std::unique_lock<std::mutex> lock(shared_->mutex);
     shared_->events = nullptr;  // no new push starts from here on
+    shared_->pendingAcks.clear();  // DeepSeek V4.1 Flash: no ack after the run ended
+    // DeepSeek V4.1 Flash: a plain lookup in acknowledgeEvent() waits for a mapping
+    // that may never come once the run is over; tell it the run is gone.
+    shared_->changed.notify_all();
     shared_->changed.wait(lock, [this] { return shared_->pushing == 0; });
 }
 

@@ -1,4 +1,4 @@
-// The commands of the `mbt` tool. Each takes its arguments (without the command
+// The commands of the `eggembt` tool. Each takes its arguments (without the command
 // name) and the streams to write to, and returns the process exit code.
 #pragma once
 

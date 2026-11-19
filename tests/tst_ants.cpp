@@ -926,6 +926,61 @@ static Net makeTwoTargetNet()
     return b.build();
 }
 
+// DeepSeek V4.1 Flash: the readable view of the pair store (--dump-pheromone,
+// doku section 21): every entry carries its state, its T-list and both
+// channels, sorted so a dump is reproducible.
+static void testPairEntriesAreReadableAndSorted()
+{
+    const Net net = makeTwoRouteNet();
+    ReachabilityGraph rg(net);
+    const StateId start = rg.addInitial(0);
+    rg.exploreAll();
+    const TransitionIndex tx = *net.findTransition("x");
+    const TransitionIndex ty = *net.findTransition("y");
+    const EdgeId ex = *rg.findEdge(start, tx);
+    const StateId s1 = rg.edge(ex).target;
+    const EdgeId ey = *rg.findEdge(start, ty);
+    const StateId s2 = rg.edge(ey).target;
+
+    AntConfig cfg;
+    cfg.tlistLength = 4;
+    CoverageDb db(rg);
+    AntColony colony(rg, db, cfg);
+    CHECK(colony.pairEntries().empty());  // nothing deposited yet
+
+    // The two routes may converge on the same marking, so a row is identified
+    // by its T-list element, not by its state.
+    TraceCascade viaX;
+    viaX.setLength(4);
+    viaX.push(stepHashOf(net.transitions[tx]));
+    colony.depositPairAttract(s1, viaX, 1.5);
+    colony.depositPairRepel(s1, viaX, 0.25);
+
+    TraceCascade viaY;
+    viaY.setLength(4);
+    viaY.push(stepHashOf(net.transitions[ty]));
+    colony.depositPairAttract(s2, viaY, 2.0);
+
+    const std::vector<AntColony::PairEntry> rows = colony.pairEntries();
+    CHECK(rows.size() == 2);
+    CHECK(rows[0].state <= rows[1].state);  // sorted by state first
+    bool sawX = false, sawY = false;
+    for (const AntColony::PairEntry &e : rows) {
+        if (e.tlist == viaX.elements()) {
+            sawX = true;
+            CHECK(e.state == s1);
+            CHECK(near(e.attract, 1.5));
+            CHECK(near(e.repel, 0.25));
+        } else if (e.tlist == viaY.elements()) {
+            sawY = true;
+            CHECK(e.state == s2);
+            CHECK(near(e.attract, 2.0));
+            CHECK(near(e.repel, 0.0));
+        }
+    }
+    CHECK(sawX && sawY);
+}
+
 static void testPairWeightRidesOnTheEdgeWeight()
 {
     const Net net = makeTwoTargetNet();
@@ -1050,6 +1105,7 @@ int main()
         {"pairsEvaporateAndArePruned", testPairsEvaporateAndArePruned},  // GLM-5.3-Flash
         {"pairWeightRidesOnTheEdgeWeight", testPairWeightRidesOnTheEdgeWeight},  // GLM-5.3-Flash
         {"pairLayerSteersTheSuggester", testPairLayerSteersTheSuggester},  // GLM-5.3-Flash
+        {"pairEntriesAreReadableAndSorted", testPairEntriesAreReadableAndSorted},  // DeepSeek V4.1 Flash
     };
     for (const auto &t : tests) {
         const int before = g_failures;

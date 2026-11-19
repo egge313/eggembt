@@ -11,8 +11,15 @@
 //   tracker -> agent   start_run         start the SUT in an initial marking
 //                      stimulate         send an input
 //                      post_mortem       take a snapshot or crash dump
+//                      ack               the event is handled, the SUT may go on
 //                      stop_run          end the run
 //                      shutdown          the session is over
+//
+// DeepSeek V4.1 Flash: synchronized events (doku section 19) are capability-gated,
+// so the version stays 1: an agent that cannot hold its SUT simply does not
+// set "sync" in its hello, and a tracker that does not know "ack" never gets
+// one (an event with "sync": true is only sent to a tracker that asked for
+// synchronization in start_run).
 //
 // Unknown fields are ignored (so the protocol can grow); unknown message types
 // are an error.
@@ -39,6 +46,7 @@ struct ProtocolMessage {
         StartRun,
         Stimulate,
         PostMortem,
+        Ack,  // DeepSeek V4.1 Flash: tracker -> agent, synchronized events
         StopRun,
         Shutdown
     };
@@ -51,17 +59,24 @@ struct ProtocolMessage {
     bool snapshot = false;
     bool crash = false;
     std::int64_t restartMs = 0;
+    bool syncCapable = false;  // DeepSeek V4.1 Flash: the agent can hold the SUT at an event
 
     // start_run (and echoed in every event of that run, so that late events of
     // a previous run can be told apart and dropped)
     std::int64_t run = 0;
     std::string initial;
     std::int64_t quiescenceMs = 0;
+    // DeepSeek V4.1 Flash: labels the agent must hold the SUT at (see syncCapable).
+    std::vector<std::string> syncLabels;
 
     // event
     EventKind kind = EventKind::Observed;
     std::string label;          // event, stimulate
     std::int64_t timestampMs = 0;
+    // DeepSeek V4.1 Flash: per-run event number (0, 1, 2, ...), and whether the
+    // agent is holding the SUT at this event until an ack for this number.
+    std::int64_t seq = 0;
+    bool syncEvent = false;
 
     // post_mortem / post_mortem_result
     std::int64_t id = 0;

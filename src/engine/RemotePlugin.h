@@ -17,6 +17,14 @@
 // Runs are numbered. start_run carries a run number the agent echoes in every
 // event of that run; events of any other run (late arrivals of the previous
 // run) are dropped, and so is everything after stopRun().
+//
+// Synchronized events (DeepSeek V4.1 Flash, doku section 19). An agent that can hold
+// its SUT says "sync": true in its hello. start_run then carries the labels to
+// hold at, and an event the agent is holding carries "seq" plus "sync": true.
+// The plug-in remembers which EventQueue sequence belongs to that wire
+// sequence; when the Session calls acknowledgeEvent(queueSeq) -- after it has
+// handled the event and any post-mortem -- the ack goes back. If the run ends
+// instead, stopRun() releases the SUT: no ack is sent.
 #pragma once
 
 #include "engine/Protocol.h"
@@ -71,6 +79,7 @@ public:
                   std::string *error) override;
     bool stimulate(const std::string &label, std::string *error) override;
     PostMortem postMortem(DumpMode mode) override;
+    void acknowledgeEvent(std::uint64_t queueSeq) override;  // DeepSeek V4.1 Flash
     void stopRun(StopReason reason) override;
     std::string pollFault() override;
 
@@ -85,6 +94,11 @@ private:
 
         EventQueue *events = nullptr;  // non-null while a run is active
         std::size_t pushing = 0;       // event pushes in progress (outside the lock)
+
+        // DeepSeek V4.1 Flash: synchronized events the agent is holding the SUT at,
+        // keyed by the EventQueue sequence (what the Session acks), holding
+        // the run number and wire sequence the ack must name.
+        std::map<std::uint64_t, std::pair<std::int64_t, std::int64_t>> pendingAcks;
         std::int64_t run = 0;          // number of the active (or last) run
         bool startAnswered = false;
         bool startOk = false;

@@ -6,7 +6,7 @@ namespace pn {
 
 EventQueue::EventQueue(std::size_t capacity) : capacity_(capacity == 0 ? 1 : capacity) {}
 
-EventQueue::PushResult EventQueue::push(SutEvent event, std::uint64_t *seq)
+EventQueue::PushResult EventQueue::push(SutEvent event, std::uint64_t *seq, bool needsAck)
 {
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -19,6 +19,7 @@ EventQueue::PushResult EventQueue::push(SutEvent event, std::uint64_t *seq)
         SequencedEvent se;
         se.seq = nextSeq_++;
         se.event = std::move(event);
+        se.needsAck = needsAck;  // DeepSeek V4.1 Flash: the producer holds the SUT
         if (seq)
             *seq = se.seq;
         queue_.push_back(std::move(se));
@@ -95,6 +96,10 @@ PumpResult pumpEvents(EventQueue &queue, BeliefTracker &tracker, std::size_t max
         result.lastSeq = e.seq;
         result.lastKind = e.event.kind;    // GLM-5.3-Flash
         result.lastLabel = e.event.label;  // GLM-5.3-Flash
+        // DeepSeek V4.1 Flash: one event at a time and the producer is waiting: the
+        // caller must react and acknowledge before anything else is pumped.
+        result.lastNeedsAck = e.needsAck;
+        result.lastAckSeq = e.seq;
         ++result.processed;
         if (e.event.kind == EventKind::Stimulated)
             ++result.stimulated;

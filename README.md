@@ -1,16 +1,16 @@
-# Eggetest — a model-based tester
+# Egge's Model-Based Tester (eggembt)
 
-`mbt` tests a system against a **Petri-net specification** of its behaviour.
+`eggembt` tests a system against a **Petri-net specification** of its behaviour.
 The model says what inputs may be sent, what outputs must come back, and what
 constitutes an error; the tool then drives the system (or a simulation of it)
 through test campaigns, watching every event against the model.
 
 ```
-mbt check    MODEL           check a model for errors: deadlocks, livelocks, ...
-mbt explore  MODEL           explore the reachability graph (--dot for Graphviz)
-mbt run      MODEL --simulate | --agent "CMD" | --connect H:P | --listen | --stdio
-mbt report   MODEL --log RUNS.jsonl
-mbt agent-sim MODEL           the built-in simulated SUT, speaking the plug-in protocol
+eggembt check    MODEL           check a model for errors: deadlocks, livelocks, ...
+eggembt explore  MODEL           explore the reachability graph (--dot for Graphviz)
+eggembt run      MODEL --simulate | --agent "CMD" | --connect H:P | --listen | --stdio
+eggembt report   MODEL --log RUNS.jsonl [--runs | --trace N] [--dot FILE]
+eggembt agent-sim MODEL           the built-in simulated SUT, speaking the plug-in protocol
 ```
 
 A campaign runs repeatedly until the model's transitions, edges, states and
@@ -31,12 +31,13 @@ so coverage continues where a previous session stopped.
     src/io       the JSON model loader, the JSON-lines run log, and the
                  line transports (standard streams, POSIX pipes, child
                  processes, TCP)
-    src/cli      the `mbt` command line tool (main.cpp sits next to it)
+    src/cli      the `eggembt` command line tool (main.cpp sits next to it)
     tests        unit tests of every layer, plus shared test helpers
                  (ElevatorModel.h is the model most tests use)
     examples     sample models: elevator-door, drink-machine,
                  heartbeat-livelock, atm (added: GLM-5.3-Flash)
     cli_test.sh  end-to-end tests of the tool: real processes, pipes, sockets
+    INSTALL.md   prerequisites, build, tests, installation, troubleshooting
 
 ## Build and test
 
@@ -46,10 +47,15 @@ Requires CMake ≥ 3.16 and a C++17 compiler. No third-party dependencies.
     cmake --build build
     ctest --test-dir build
 
-The 13 tests are 12 unit test suites (engine, coverage, belief tracking,
+`cmake --install build --prefix "$HOME/.local"` installs `eggembt` and
+`ref-agent` into `$PREFIX/bin`; `INSTALL.md` has the prerequisites, the test
+commands, the platform notes and troubleshooting.
+
+The 18 tests are 17 unit test suites (engine, coverage, belief tracking,
 livelock analysis, suggester, ant colony, async event queue, session, remote
-plug-in, transports, model loader, run log) plus `cli_test.sh`, which runs the
-`mbt` binary end to end against the examples.
+plug-in, transports, model loader, PNML import, crash experiments, coverage
+overlap, run log, pheromone benchmark, lifecycle inputs) plus `cli_test.sh`,
+which runs the `eggembt` binary end to end against the examples.
 
 ## Model format and plug-in protocol
 
@@ -58,7 +64,7 @@ Models are JSON; see `examples/elevator-door.json` for places, transitions
 and the initial, target and error markings. A system under test takes part over
 the plug-in protocol — one JSON object per line, exchanged over standard
 streams, a pipe or TCP (`--stdio`, `--agent`, `--connect`, `--listen`); the
-`mbt agent-sim` shim turns any plug-in into an agent, and the built-in
+`eggembt agent-sim` shim turns any plug-in into an agent, and the built-in
 simulated SUT behaves exactly as its model says.
 
 ---
@@ -69,9 +75,9 @@ simulated SUT behaves exactly as its model says.
 
 The ant-colony guidance can be switched off per campaign:
 
-    mbt run MODEL --simulate --no-ants
+    eggembt run MODEL --simulate --no-ants
 
-- `--no-ants` on the `mbt run` command line (engine counterpart:
+- `--no-ants` on the `eggembt run` command line (engine counterpart:
   `SessionConfig::useAnts = false`). The colony then neither walks the model
   nor leaves pheromone; the suggester ranks inputs on its own
   (targets, new transitions, uncovered edges, frontier, robustness, hazard).
@@ -90,7 +96,7 @@ The ant-colony guidance can be switched off per campaign:
   the console `Guidance` block. The engine side gained
   `Session::config()` and a canonical `toString(TargetPolicy)` in
   `src/model/Net.h`. Tested in `cli_test.sh` (`guidance-in-report`).
-- `docs/PLUGIN_PROTOCOL.md` written: the full wire protocol between `mbt run`
+- `docs/PLUGIN_PROTOCOL.md` written: the full wire protocol between `eggembt run`
   and an agent — field tables for all ten message types, an example run, a
   checklist for agent authors, and where the code lives. Closes the reference
   in §8 of `doku.md` and in `Protocol.h` / `AgentServer.h`.
@@ -111,14 +117,14 @@ graph off (the limit stops *creating* states, not expanding them):
   walks past the truncated region: the run ends in a deviation whose message
   says the explored model may be incomplete there — a dropped-edge stimulus is
   only Preempted, and the frontier is never called a deadlock).
-- `cli_test.sh` scenario `state-limit`: `mbt explore --max-states 4` reports
+- `cli_test.sh` scenario `state-limit`: `eggembt explore --max-states 4` reports
   "4 states, 3 edges" with the "(incomplete: state limit or place bounds)"
-  marker, and `mbt run --max-states 4` warns and still finishes with
+  marker, and `eggembt run --max-states 4` warns and still finishes with
   "coverage complete".
 
 ### GLM-5.3-Flash — seeded campaigns and the `traced` key
 
-**`--seed N` for `mbt run`** (new, default 0): the input choice had one
+**`--seed N` for `eggembt run`** (new, default 0): the input choice had one
 arbitrary last resort — among exactly tied inputs the lowest transition index
 won — which made every campaign over the same model pick the same inputs. A
 non-zero seed breaks those ties at random, reproducibly:
@@ -153,7 +159,7 @@ accept an explicit `"traced": true|false`:
   testing protocol, not a per-model choice;
 - engine-wide the decision now lives in `Transition::traced` (derived by
   `NetBuilder::build()`, overridable per transition via `NetBuilder::traced()`),
-  used by the belief tracker, the simulated SUT and `mbt check`'s kind counts.
+  used by the belief tracker, the simulated SUT and `eggembt check`'s kind counts.
 - Tested in `tests/tst_jsonnetloader.cpp`
   (`tracedKeyDefaultsAndOverrides`, `tracedKeyIsRejectedWhereItDoesNotApply`),
   `tests/tst_session.cpp` (`aNamedInternalStepIsReportedOnlyWhenTraced`) and
@@ -191,7 +197,7 @@ transitions, states and edges:
   matrices and `mean_pairwise` means. Low means say the steering spread the
   testing out; 100% would say every run repeated the same coverage. The
   console shows the one-line `Overlap` summary;
-- new command **`mbt compare MODEL LOG_A LOG_B [--csv FILE] [--json FILE]`**:
+- new command **`eggembt compare MODEL LOG_A LOG_B [--csv FILE] [--json FILE]`**:
   the campaigns' mutual overlap, the diversity within each campaign, and the
   run-against-run matrix (percent grid, while it fits the terminal).
   `--csv` writes every pair as `group,i,j,transitions,states,edges` rows for
@@ -386,8 +392,8 @@ path for each of the three components (ATM, session, database).
 
 Try it:
 
-    mbt check examples/atm.json
-    mbt run examples/atm.json --simulate --sim-seed 5 --max-runs 45 --quiescence 40
+    eggembt check examples/atm.json
+    eggembt run examples/atm.json --simulate --sim-seed 5 --max-runs 45 --quiescence 40
 
 Tested in `cli_test.sh` (scenario `atm-visit`). The suite stands at 14 CTest
 entries — 13 unit suites plus `cli_test.sh` (27 scenarios) — all green.
@@ -439,22 +445,22 @@ one-input crash → 3.75, flat variants → 3.0).
 
 **PNML import** (§12 item 6). `src/io/PnmlLoader.{h,cpp}` reads PNML
 (Petri Net Markup Language) with a small dependency-free XML reader and the
-JSON loader's issue reporting. The mbt conventions: a
-`<toolspecific tool="mbt" kind="controllable|observable|internal"
+JSON loader's issue reporting. The eggembt conventions: a
+`<toolspecific tool="eggembt" kind="controllable|observable|internal"
 label="...">` per transition, a milestone as a second toolspecific
 (`kind="milestone" rank="N"`), the `?`/`!` id-prefix fallback for
 controllable/observable, unmarked transitions internal and **silent**, and the
 per-place initial markings unioned into one marking named after the net. No
-bounds or target/error markings come out of PNML (warned about). `mbt check`
-and `mbt run` accept PNML files (recognised by the leading `<`) next to JSON.
+bounds or target/error markings come out of PNML (warned about). `eggembt check`
+and `eggembt run` accept PNML files (recognised by the leading `<`) next to JSON.
 Shipped example `examples/coffee-pnml.pnml` — try
-`mbt check examples/coffee-pnml.pnml` and
-`mbt run examples/coffee-pnml.pnml --simulate`. Tested in the new
+`eggembt check examples/coffee-pnml.pnml` and
+`eggembt run examples/coffee-pnml.pnml --simulate`. Tested in the new
 `tests/tst_pnml.cpp` (21 tests) and `cli_test.sh` (`pnml-model`).
 
 **The reference agent shim** (§12 item 7). `examples/agents/ref_agent.cpp` is
 a hand-written C++ SUT (a coffee machine) wrapped in `ISutPlugin` +
-`AgentServer` over standard streams, served by `mbt run
+`AgentServer` over standard streams, served by `eggembt run
 examples/agents/coffee.json --agent <ref-agent>`; its header comment is the
 checklist for writing your own wrapper (marking mapping, acknowledgements,
 ordered events, quiescence, post-mortem honesty). Built as the `ref-agent`
@@ -470,9 +476,9 @@ The suite stands at **15 CTest entries** — 14 unit suites plus `cli_test.sh`
 Two closures that end §12 (both documented with the item quoted verbatim in
 `doku.md` §15):
 
-**Backtraces in `mbt report`** (§12 item 2). The GUI half of the item was
+**Backtraces in `eggembt report`** (§12 item 2). The GUI half of the item was
 scratched by decision — *"a textual report is fine"* — so the coverage-and-
-backtraces view ships as text: `mbt report` prints, per definitely covered
+backtraces view ships as text: `eggembt report` prints, per definitely covered
 transition, the chain of moves that led into its first definite visit, oldest
 first (`start > coin.insert > button.coffee > coffee.served`). An ambiguous
 stretch — the run certainly went on, but the exact edge is not certain —
@@ -568,15 +574,17 @@ reproducible) and `--sim-crash-after N` dies wherever it is. Known gap,
 documented: dumps taken for a prediction are not re-counted on restore (the
 persisted dump record does not name its crash entry).
 
-**`--credits`** (`mbt credits`, `mbt --credits`): prints the project's
-credits, byte for byte as Egge specified (the one output that carries a
-signature, by explicit request):
+**`--credits`** (`eggembt credits`, `eggembt --credits`): prints the project's
+credits as Egge specified them (the one output that carries a signature, by
+explicit request), except the first line, which the later rename changed to the
+new product name:
 
-    Egge Model Based Tester
+    Egge's Model-Based Tester
         Designer: Esa Kettunen
         Copyright (c) Esa Kettunen 2026
         Software written by artificial intelligence: Claude Sonnet 5.5 Medium
         Software written by artificial intelligence: GLM-5.3-Flash
+        Software written by artificial intelligence: DeepSeek V4.1 Flash
 
 The suite stands at **16 CTest entries** — 15 unit suites (new: `tst_crash`;
 `tst_session` 41, `tst_jsonnetloader` 35) plus `cli_test.sh` (32 scenarios) —
@@ -598,8 +606,8 @@ captures stdout+stderr (cut at 4096 bytes) and is bounded by
 `--hook-timeout S` (1–3600, default 60 — a child past its deadline is
 killed and counts as `timeout`); an asynchronous one is fire-and-forget
 (`launched`, output to /dev/null, children reaped — never killed — at
-exit). Commands run through `sh -c` in mbt's working directory with
-`MBT_TRANSITION`, `MBT_TRANSITION_LABEL`, `MBT_RUN` and `MBT_LOG` beside
+exit). Commands run through `sh -c` in eggembt's working directory with
+`EGGEMBT_TRANSITION`, `EGGEMBT_TRANSITION_LABEL`, `EGGEMBT_RUN` and `EGGEMBT_LOG` beside
 the inherited environment; model data is never interpolated into the
 command line. Hook records round-trip through the run log and are adopted
 on restore **without re-executing** the commands; the report prints a
@@ -610,3 +618,118 @@ on restore **without re-executing** the commands; the report prints a
 The suite stands at **16 CTest entries** — 15 unit suites (`tst_session`
 49 tests, `tst_jsonnetloader` 38; `tst_runlogio` gained the hook-records
 round-trip, now 8) plus `cli_test.sh` (33 scenarios) — all green.
+
+### DeepSeek V4.1 Flash — the rename, and synchronized events
+
+**The rename.** The product is now **Egge's Model-Based Tester**, abbreviated
+`eggembt` — the binary, the command in every example, and the CMake project.
+The `MBT_*` environment prefix became `EGGEMBT_*` (including the hooks'
+`EGGEMBT_TRANSITION`, `EGGEMBT_TRANSITION_LABEL`, `EGGEMBT_RUN`, `EGGEMBT_LOG`),
+the credits' first line reads `Egge's Model-Based Tester`, and the agent names
+and test temp prefix follow. Two format tags moved with backward
+compatibility: PNML accepts `tool="eggembt"` and still `tool="mbt"`; run logs
+are written as `"format":"eggembt-runlog"` and still read `"mbt-runlog"`. The
+internal library targets `mbt_engine`/`mbt_core`/`mbt_agent` and the macro
+`MBT_POSIX_IO` keep their names on purpose.
+
+**Synchronized events** (documented in full in `doku.md` §19; user manual
+§2.3, §8.3). A model can mark a transition of the SUT's own moves with
+`"sync": true` (observable, or traced internal — controllable transitions are
+rejected, their stimulus is acknowledged already). With the campaign switch
+`--sync-events` (default off) the SUT is then **held at that event** until the
+tracker has handled it: the event is pumped, its consequences run — including
+a post-mortem, which is the point, because only a frozen SUT gives an accurate
+stack — and only then does the ack release it. A run that ends while the SUT is
+held sends no ack; `stop_run`, `shutdown` or the closing connection releases
+it. The plug-in capability is `eventAcks` (`"sync": true` in hello); the wire
+adds `sync_labels` to `start_run`, `seq` and `"sync"` to `event`, and a new
+tracker→agent `{"type":"ack","run":N,"seq":M}` — all capability-gated, so the
+protocol version stays 1. An agent that cannot acknowledge does not stop
+anything: the run goes on unsynchronized with a note saying why, once per
+campaign. The Guidance block reports the state
+(`sync: N transition(s), held until acknowledged (--sync-events)` or
+`not held (no --sync-events)`), and the `--json` carries `sync_events` and
+`sync_transitions`.
+
+**The version** now lives in `src/Version.h` and follows the git branch
+(`v0.0.1`), instead of the premature `1.0.0` in the CMake project (`eggembt
+version` prints `eggembt v0.0.1`). The credits gained a sixth line,
+`Software written by artificial intelligence: DeepSeek V4.1 Flash`.
+
+The suite stands at **16 CTest entries** — 15 unit suites (`tst_session`
+53 tests, `tst_jsonnetloader` 40, `tst_remote` 19) plus `cli_test.sh`
+(34 scenarios) — all green.
+
+### DeepSeek V4.1 Flash — inspecting a campaign afterwards
+
+**Three views of the record, one drawing** (documented in `doku.md` §21; user
+manual §8.3, §10.5). `report --runs` lists every run's recorded steps, a long
+one keeping its last 20 and saying `[N steps]`; `report --trace N` prints one
+run in full with its detail. Both read the log's own steps — an event run shows
+its events — so nothing is re-simulated. `--coverage-elements` on `run` or
+`report` adds `coverage.states[]` and `coverage.edges[]` to the `--json`
+report: per known element its marking (or `from`/`transition`/`label`/`to`),
+`definite`, `ambiguous`, `covered` (the `--threshold` rule) and the 1-based
+`first_run`/`last_run`. `report --dot FILE` draws the graph for Graphviz
+coloured by that coverage — dark green and thick for covered, light green for
+visited below the threshold, orange for possibly visited, grey for never
+visited, with a legend; `explore --dot` stays plain because it runs before any
+campaign.
+
+`--dump-pheromone FILE` (on `run`, or on `report`) writes the colony as JSON:
+per edge its `from`, `transition`, `label`, `to`, `attract`, `repel` and
+static `region`; per (marking, T-list) pair its `tlist` and both channels;
+plus `tlist`, `tau_max`, `iterations`, `ant_walks`. Everything is keyed by
+readable names because edge ids are session-local. The new
+`AntColony::pairEntries()` view sorts by (state, list) so two dumps of the same
+state are identical. The log records the campaign's steps, not its colony
+settings, so `report` gained `--tlist N`: give it the campaign's value and a
+rebuilt dump shows the same pair rows (four runs of `examples/atm.json` at
+`--tlist 4` yield the same three rows live and rebuilt). The rebuild stays the
+documented approximation — milestone and catastrophe deposits at
+`--restored-pheromones`, hence `iterations`/`ant_walks` 0 on `report`.
+
+The suite stands at **16 CTest entries** — 15 unit suites (`tst_ants` gained
+`pairEntriesAreReadableAndSorted`, now 22; `tst_session` 53,
+`tst_jsonnetloader` 40, `tst_remote` 19) plus `cli_test.sh` (35 scenarios,
++`inspection`) — all green.
+
+### DeepSeek V4.1 Flash — the colony written out, Jaccard's index, and a column
+
+**A cosmetic fix with a test.** The backtrace table padded transition names
+to a fixed 16 characters, so the ATM's `bank.stolen_report` ran into its
+chain. The column now follows the longest name printed and gets one separator
+space; the `inspection` scenario in `cli_test.sh` pins the space.
+
+**The colony, checked against its code** (user manual §7.1). The choice rule
+is now written out instead of described as a "cost":
+
+    weight(edge) = (attract + 0.1)^alpha · novelty^beta · exp(-lambda · (repel + region))
+    novelty      = 1 / (1 + hits)      (0.01 when the edge is saturated)
+    alpha = beta = lambda = 1
+
+with the two-step draw (SUT moves vs tester inputs at 0.5 each, then by
+weight). The novel-territory deposit was also misdescribed: an ant deposits
+1.0 **at the state** whose way out is uncovered (or unexpandable within the
+round's 200-state budget) and ends its walk — not on the edges into unvisited
+states; the per-edge `1/(1 + hits)` factor is separate. Everything else was
+verified against `AntConfig` and stands: 20 ants × 40 steps, back-propagation
+of at least 5 nodes at 0.7 decay, evaporation 0.10/0.02, `tauMax` 10,
+milestone 1.5 × rank, catastrophe 3.0 × (1 + 0.25 · min(stimuli, 8)), static
+region repel 1.0, saturation. The manual's command list gained the `credits`
+line the help has carried since the rename.
+
+**Jaccard's index, verbatim** (user manual §10.6; `doku.md` §22). For two sets
+of covered elements, `J(A, B) = |A ∩ B| / |A ∪ B| = |A ∩ B| / (|A| + |B| −
+|A ∩ B|)`, computed separately for transitions, states and edges. The sets are
+the elements a run *definitely* touched — states visited (initial state
+included), transitions certainly fired (ambiguous credits included), edges
+traversed — presence only, never frequency. `J(A,A) = 1`, two empty sets count
+as identical (`0/0` is not computable), campaign sets are the unions of their
+runs, and `mean_pairwise` averages the `n(n−1)/2` unordered pairs. Worked
+example: `{insert_card, open_session, connect_db, reader_check}` against
+`{insert_card, open_session, connect_db, atm_fail}` is `3/5 = 60 %`. The ATM
+demo's two logs: campaigns 93 / 80 / 80 %, within-campaign 49 / 8 / 6 and
+49 / 7 / 6, cross means 58 / 23 / 22 (transitions / states / edges). It is not
+a coverage measure, not the overlap coefficient `|A ∩ B| / min(|A|, |B|)`, and
+not frequency- or order-aware; the console rounds, `--csv`/`--json` are exact.

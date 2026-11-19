@@ -70,12 +70,18 @@ Session::Session(const Net &net, SessionConfig config)
     suggester_.setTraceCascade(&run_);
     if (cfg_.useAnts)
         suggester_.setAntColony(&ants_);
+    // DeepSeek V4.1 Flash: the model's synchronized events (doku section 19). The
+    // labels go to the plug-in only when the campaign switch is on and the
+    // plug-in can acknowledge them.
+    for (const Transition &t : net_.transitions)
+        if (t.synchronized)
+            syncLabels_.push_back(t.label);
 }
 
 // GLM-5.3-Flash: the asynchronous hook children were fire-and-forget: they
 // are never killed. At destruction those that have already ended are reaped
 // (no zombie litters the process table); the ones still running keep running
-// -- mbt orphans them to the init process, which reaps them. The synchronous
+// -- eggembt orphans them to the init process, which reaps them. The synchronous
 // children are always waited for at their execution.
 Session::~Session()
 {
@@ -322,6 +328,23 @@ RunReport Session::runOnce(ISutPlugin &plugin)
     const Clock::time_point startedAt = Clock::now();  // GLM-5.3-Flash: run duration
     const PluginCapabilities caps = plugin.capabilities();
 
+    // DeepSeek V4.1 Flash: does this run hold synchronized events (doku section
+    // 19)? The model opts in per transition and the campaign as a whole; the
+    // plug-in must also be able to acknowledge. Without that capability the
+    // run goes on unsynchronized -- and says exactly why, once per campaign.
+    PluginRunOptions runOptions = cfg_.plugin;
+    const bool syncWanted = cfg_.syncEvents && !syncLabels_.empty();
+    if (syncWanted && !caps.eventAcks) {
+        if (!syncNoteGiven_) {
+            rep.notes.push_back(
+                "the plug-in cannot acknowledge events (its capabilities do not offer \"sync\"): "
+                "the synchronized events are not held, the run is not synchronized");
+            syncNoteGiven_ = true;
+        }
+    } else if (syncWanted) {
+        runOptions.syncLabels = syncLabels_;
+    }
+
     queue_.reset();
     tracker_.beginRun(initialIdx, "session run " + std::to_string(runCounter_));
     ++runCounter_;
@@ -368,7 +391,7 @@ RunReport Session::runOnce(ISutPlugin &plugin)
     };
 
     std::string err;
-    if (plugin.startRun(net_.initialMarkings[initialIdx].name, cfg_.plugin, queue_, &err))
+    if (plugin.startRun(net_.initialMarkings[initialIdx].name, runOptions, queue_, &err))
         pluginStarted = true;
     else
         finish(RunOutcome::Aborted, "the plug-in could not start the run: " + err, StopReason::Aborted);
@@ -403,14 +426,14 @@ RunReport Session::runOnce(ISutPlugin &plugin)
     std::vector<StateId> hookGuardBelief;
 
     // GLM-5.3-Flash: executes ONE command hook (doku section 18). The command
-    // line runs through sh -c in mbt's working directory; the model's data is
+    // line runs through sh -c in eggembt's working directory; the model's data is
     // never interpolated into it -- context arrives as environment variables
-    // (MBT_TRANSITION, MBT_TRANSITION_LABEL, MBT_RUN, and MBT_LOG when a run
+    // (EGGEMBT_TRANSITION, EGGEMBT_TRANSITION_LABEL, EGGEMBT_RUN, and EGGEMBT_LOG when a run
     // log is open) beside the inherited environment. A synchronous command
     // blocks the run loop (the SUT's own events queue up meanwhile) and is
     // bounded by --hook-timeout: a child that runs longer is killed and its
     // execution counts as failed; its stdout+stderr is captured (truncated)
-    // into the run record. An asynchronous one is fire-and-forget: mbt does
+    // into the run record. An asynchronous one is fire-and-forget: eggembt does
     // not wait for it and never kills it; the child is reaped -- not killed --
     // when the session dies. A failure is a note ("Note only, run continues"):
     // the campaign carries on.
@@ -448,12 +471,12 @@ RunReport Session::runOnce(ISutPlugin &plugin)
                     if (devnull > STDERR_FILENO)
                         ::close(devnull);
                 }
-                ::setenv("MBT_TRANSITION", tr.id.c_str(), 1);
-                ::setenv("MBT_TRANSITION_LABEL", tr.label.c_str(), 1);
+                ::setenv("EGGEMBT_TRANSITION", tr.id.c_str(), 1);
+                ::setenv("EGGEMBT_TRANSITION_LABEL", tr.label.c_str(), 1);
                 const std::string runId = std::to_string(rep.id);
-                ::setenv("MBT_RUN", runId.c_str(), 1);
+                ::setenv("EGGEMBT_RUN", runId.c_str(), 1);
                 if (!cfg_.logPath.empty())
-                    ::setenv("MBT_LOG", cfg_.logPath.c_str(), 1);
+                    ::setenv("EGGEMBT_LOG", cfg_.logPath.c_str(), 1);
                 ::execl("/bin/sh", "sh", "-c", hook.run.c_str(), static_cast<char *>(nullptr));
                 ::_exit(127);  // exec failed
             }
@@ -498,12 +521,12 @@ RunReport Session::runOnce(ISutPlugin &plugin)
             ::dup2(out[1], STDERR_FILENO);
             ::close(out[0]);
             ::close(out[1]);
-            ::setenv("MBT_TRANSITION", tr.id.c_str(), 1);
-            ::setenv("MBT_TRANSITION_LABEL", tr.label.c_str(), 1);
+            ::setenv("EGGEMBT_TRANSITION", tr.id.c_str(), 1);
+            ::setenv("EGGEMBT_TRANSITION_LABEL", tr.label.c_str(), 1);
             const std::string runId = std::to_string(rep.id);
-            ::setenv("MBT_RUN", runId.c_str(), 1);
+            ::setenv("EGGEMBT_RUN", runId.c_str(), 1);
             if (!cfg_.logPath.empty())
-                ::setenv("MBT_LOG", cfg_.logPath.c_str(), 1);
+                ::setenv("EGGEMBT_LOG", cfg_.logPath.c_str(), 1);
             ::execl("/bin/sh", "sh", "-c", hook.run.c_str(), static_cast<char *>(nullptr));
             ::_exit(127);  // exec failed (sh not runnable at all)
         }
@@ -676,12 +699,45 @@ RunReport Session::runOnce(ISutPlugin &plugin)
             pump.last = one.last;
             pump.lastKind = one.lastKind;
             pump.lastLabel = one.lastLabel;
+            pump.lastNeedsAck = one.lastNeedsAck;  // DeepSeek V4.1 Flash
+            pump.lastAckSeq = one.lastAckSeq;
             // The SUT took a move the model knew about: credit its label. A
             // Deviation is NOT a take (the model did not allow the move), and
             // neither are quiescence steps nor the tester's own Stimulated
             // acknowledgements.
             if (one.lastKind == EventKind::Observed && one.last.status == StepStatus::Ok)
                 db_.recordTaken(one.lastLabel);
+            // DeepSeek V4.1 Flash: the reserved lifecycle inputs (doku section 26)
+            // are worth a note: the engine just moved the run's position (or
+            // closed the gate), and the report should say so.
+            if (one.lastKind == EventKind::Stimulated && one.last.status == StepStatus::Ok) {
+                for (const Transition &t : net_.transitions) {
+                    if (t.kind != TransitionKind::Controllable || t.label != one.lastLabel
+                        || t.lifecycle == LifecycleAction::None)
+                        continue;
+                    switch (t.lifecycle) {
+                    case LifecycleAction::Start:
+                        rep.notes.push_back("the SUT was started by the model's 'start' input");
+                        break;
+                    case LifecycleAction::Restart:
+                        rep.notes.push_back("the SUT was restarted by the model's 'restart' input");
+                        break;
+                    case LifecycleAction::Stop:
+                        rep.notes.push_back("the SUT was stopped by the model's 'stop' input: only start and "
+                                            "restart are offered until it is up again");
+                        break;
+                    case LifecycleAction::Pause:
+                        rep.notes.push_back("the SUT was paused by the model's 'pause' input");
+                        break;
+                    case LifecycleAction::Resume:
+                        rep.notes.push_back("the SUT was resumed by the model's 'resume' input");
+                        break;
+                    case LifecycleAction::None:
+                        break;
+                    }
+                    break;
+                }
+            }
             // GLM-5.3-Flash: the plug-in reported the SUT died on its own.
             if (one.lastKind == EventKind::Died)
                 sawDied = true;
@@ -697,6 +753,11 @@ RunReport Session::runOnce(ISutPlugin &plugin)
                 pump.runEnded = true;
                 break;
             }
+            // DeepSeek V4.1 Flash: the SUT is held at this event (doku section 19).
+            // Stop pumping: the reactions below -- including a post-mortem,
+            // which must see the stack frozen -- run before the ack.
+            if (one.lastNeedsAck)
+                break;
         }
         if (queue_.overflowed()) {
             finish(RunOutcome::Aborted, "event queue overflow: events were lost", StopReason::Aborted);
@@ -964,6 +1025,14 @@ RunReport Session::runOnce(ISutPlugin &plugin)
             }
         }
 
+        // DeepSeek V4.1 Flash: every consequence of the held event has been
+        // handled above (a post-mortem saw the SUT frozen), so let it go on.
+        // A run that is ending does not ack: stop_run releases the SUT.
+        if (pump.lastNeedsAck && !ended) {
+            plugin.acknowledgeEvent(pump.lastAckSeq);
+            pump.lastNeedsAck = false;
+        }
+
         if (tracker_.eventCount() >= cfg_.maxEventsPerRun) {
             finish(RunOutcome::Completed, "run length limit", StopReason::Finished);
             break;
@@ -978,7 +1047,11 @@ RunReport Session::runOnce(ISutPlugin &plugin)
         }
 
         if (!changed) {
-            if (waiting && cfg_.idleTimeout.count() > 0 && Clock::now() - lastActivity > cfg_.idleTimeout)
+            // DeepSeek V4.1 Flash: a paused or down SUT is expected to be silent
+            // (doku section 26); the idle timeout is a fault only while it runs.
+            if (waiting && cfg_.idleTimeout.count() > 0
+                && tracker_.lifecycleGate() == LifecycleGate::Running
+                && Clock::now() - lastActivity > cfg_.idleTimeout)
                 finish(RunOutcome::Aborted,
                        "no event from the SUT for " + std::to_string(cfg_.idleTimeout.count())
                            + " ms although one was expected",

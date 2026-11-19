@@ -17,6 +17,7 @@ const char *typeName(ProtocolMessage::Type t)
     case ProtocolMessage::Type::StartRun:         return "start_run";
     case ProtocolMessage::Type::Stimulate:        return "stimulate";
     case ProtocolMessage::Type::PostMortem:       return "post_mortem";
+    case ProtocolMessage::Type::Ack:              return "ack";  // DeepSeek V4.1 Flash
     case ProtocolMessage::Type::StopRun:          return "stop_run";
     case ProtocolMessage::Type::Shutdown:         return "shutdown";
     }
@@ -27,7 +28,7 @@ bool parseType(const std::string &s, ProtocolMessage::Type &out)
 {
     using T = ProtocolMessage::Type;
     for (T t : {T::Hello, T::RunStarted, T::Event, T::PostMortemResult, T::Fault, T::StartRun, T::Stimulate,
-                T::PostMortem, T::StopRun, T::Shutdown}) {
+                T::PostMortem, T::Ack, T::StopRun, T::Shutdown}) {
         if (s == typeName(t)) {
             out = t;
             return true;
@@ -98,6 +99,7 @@ std::string encodeMessage(const ProtocolMessage &m)
         o.set("snapshot", JsonValue::boolean(m.snapshot));
         o.set("crash", JsonValue::boolean(m.crash));
         o.set("restart_ms", JsonValue::number(static_cast<double>(m.restartMs)));
+        o.set("sync", JsonValue::boolean(m.syncCapable));  // DeepSeek V4.1 Flash
         break;
     case T::RunStarted:
         o.set("ok", JsonValue::boolean(m.ok));
@@ -111,6 +113,9 @@ std::string encodeMessage(const ProtocolMessage &m)
         if (!m.label.empty())
             o.set("label", JsonValue::string(m.label));
         o.set("t", JsonValue::number(static_cast<double>(m.timestampMs)));
+        o.set("seq", JsonValue::number(static_cast<double>(m.seq)));  // DeepSeek V4.1 Flash
+        if (m.syncEvent)
+            o.set("sync", JsonValue::boolean(true));  // DeepSeek V4.1 Flash: the SUT is held
         break;
     case T::PostMortemResult: {
         o.set("id", JsonValue::number(static_cast<double>(m.id)));
@@ -132,6 +137,12 @@ std::string encodeMessage(const ProtocolMessage &m)
         o.set("run", JsonValue::number(static_cast<double>(m.run)));
         o.set("initial", JsonValue::string(m.initial));
         o.set("quiescence_ms", JsonValue::number(static_cast<double>(m.quiescenceMs)));
+        if (!m.syncLabels.empty()) {  // DeepSeek V4.1 Flash: hold these labels
+            JsonValue labels = JsonValue::array();
+            for (const std::string &l : m.syncLabels)
+                labels.push(JsonValue::string(l));
+            o.set("sync_labels", labels);
+        }
         break;
     case T::Stimulate:
         o.set("label", JsonValue::string(m.label));
@@ -139,6 +150,10 @@ std::string encodeMessage(const ProtocolMessage &m)
     case T::PostMortem:
         o.set("id", JsonValue::number(static_cast<double>(m.id)));
         o.set("mode", JsonValue::string(m.mode == DumpMode::Crash ? "crash" : "snapshot"));
+        break;
+    case T::Ack:  // DeepSeek V4.1 Flash: the event seq of the run may go on
+        o.set("run", JsonValue::number(static_cast<double>(m.run)));
+        o.set("seq", JsonValue::number(static_cast<double>(m.seq)));
         break;
     case T::StopRun:
         o.set("reason", JsonValue::string(m.reason.empty() ? "finished" : m.reason));
@@ -180,6 +195,8 @@ bool decodeMessage(const std::string &line, ProtocolMessage &out, std::string *e
         if (const JsonValue *v = o.find("crash"))
             m.crash = v->asBool();
         m.restartMs = optInt(o, "restart_ms", 0);
+        if (const JsonValue *v = o.find("sync"))  // DeepSeek V4.1 Flash: optional capability
+            m.syncCapable = v->asBool();
         break;
     }
     case T::RunStarted:
@@ -198,6 +215,9 @@ bool decodeMessage(const std::string &line, ProtocolMessage &out, std::string *e
         if (m.kind != EventKind::Quiescent && m.label.empty())
             return setError(error, "an observed or stimulated event needs a \"label\"");
         m.timestampMs = optInt(o, "t", 0);
+        m.seq = optInt(o, "seq", 0);  // DeepSeek V4.1 Flash: 0 for a tracker that does not send it
+        if (const JsonValue *v = o.find("sync"))
+            m.syncEvent = v->asBool();
         break;
     }
     case T::PostMortemResult:
@@ -220,6 +240,10 @@ bool decodeMessage(const std::string &line, ProtocolMessage &out, std::string *e
             return false;
         m.run = optInt(o, "run", 0);
         m.quiescenceMs = optInt(o, "quiescence_ms", 0);
+        if (const JsonValue *labels = o.find("sync_labels"))  // DeepSeek V4.1 Flash
+            for (const JsonValue &l : labels->items())
+                if (l.isString())
+                    m.syncLabels.push_back(l.asString());
         break;
     case T::Stimulate:
         if (!needString(o, "label", m.label, error))
@@ -237,6 +261,11 @@ bool decodeMessage(const std::string &line, ProtocolMessage &out, std::string *e
             return setError(error, "unknown post-mortem mode \"" + mode + "\"");
         break;
     }
+    case T::Ack:  // DeepSeek V4.1 Flash
+        if (!needInt(o, "seq", m.seq, error))
+            return false;
+        m.run = optInt(o, "run", 0);
+        break;
     case T::StopRun:
         m.reason = optString(o, "reason");
         if (m.reason.empty())
