@@ -868,6 +868,72 @@ struct TstJsonNetLoader {
         }
     }
 
+    // DeepSeek V4.1 Flash: the "rare" key (doku section 30). true means the
+    // documented defaults; an object overrides them; false is no marker.
+    void rareKeyFormsAreParsed()
+    {
+        const char *transitions =
+            R"([{"id":"t","label":"go","kind":"controllable",)"
+            R"("rare":{"p":0.002,"attempts":7,"wait-for":250}},)"
+            R"({"id":"u","kind":"internal"},)"
+            R"({"id":"v","label":"pop","kind":"observable","rare":true},)"
+            R"({"id":"w","label":"nix","kind":"observable","rare":false}])";
+        const char *arcs =
+            R"([{"from":"p","to":"t"},{"from":"t","to":"q"},{"from":"q","to":"u"},{"from":"u","to":"p"},)"
+            R"({"from":"q","to":"v"},{"from":"v","to":"p"},{"from":"q","to":"w"},{"from":"w","to":"p"}])";
+        const LoadResult r = JsonNetLoader::loadJson(makeDoc(kPlaces, transitions, arcs));
+        T_VERIFY2(r.ok(), minitest::cstr(r.report()));
+        T_VERIFY2(r.issues.empty(), minitest::cstr(r.report()));
+
+        const pn::Transition &t = r.net->transitions[*r.net->findTransition("t")];
+        T_VERIFY(t.rare.has_value());
+        T_VERIFY(near(t.rare->p, 0.002));
+        T_COMPARE(t.rare->attempts, std::uint32_t(7));
+        T_COMPARE(t.rare->waitForMs, std::uint32_t(250));
+
+        const pn::Transition &v = r.net->transitions[*r.net->findTransition("v")];
+        T_VERIFY(v.rare.has_value());
+        T_VERIFY(near(v.rare->p, 0.001));  // the documented defaults
+        T_COMPARE(v.rare->attempts, std::uint32_t(100));
+        T_COMPARE(v.rare->waitForMs, std::uint32_t(0));
+
+        T_VERIFY(!r.net->transitions[*r.net->findTransition("w")].rare.has_value());
+    }
+
+    // DeepSeek V4.1 Flash: a rare transition must be visible, and its numbers
+    // have to describe a hunt that can actually run.
+    void rareKeyIsValidatedAndNeedsVisibility()
+    {
+        {   // an untraced internal step is never seen, so a hunt could never tell
+            const char *transitions =
+                R"([{"id":"t","label":"go","kind":"controllable"},)"
+                R"({"id":"u","kind":"internal","rare":true}])";
+            const LoadResult r = JsonNetLoader::loadJson(makeDoc(kPlaces, transitions, kArcs));
+            T_VERIFY(!r.ok());
+            T_VERIFY(hasIssue(r, LoadIssue::Severity::Error, "$.transitions[1].rare", "visible"));
+        }
+        {   // p must lie strictly between 0 and 1, attempts >= 1, wait-for >= 0
+            const char *transitions =
+                R"([{"id":"r1","label":"a","kind":"observable","rare":{"p":0}},)"
+                R"({"id":"r2","label":"b","kind":"observable","rare":{"p":1}},)"
+                R"({"id":"r3","label":"c","kind":"observable","rare":{"attempts":0}},)"
+                R"({"id":"r4","label":"d","kind":"observable","rare":{"wait-for":-1}},)"
+                R"({"id":"r5","label":"e","kind":"observable","rare":"yes"}])";
+            const char *arcs =
+                R"([{"from":"p","to":"r1"},{"from":"r1","to":"q"},{"from":"p","to":"r2"},)"
+                R"({"from":"r2","to":"q"},{"from":"p","to":"r3"},{"from":"r3","to":"q"},)"
+                R"({"from":"p","to":"r4"},{"from":"r4","to":"q"},{"from":"p","to":"r5"},)"
+                R"({"from":"r5","to":"q"}])";
+            const LoadResult r = JsonNetLoader::loadJson(makeDoc(kPlaces, transitions, arcs));
+            T_VERIFY(!r.ok());
+            T_VERIFY(hasIssue(r, LoadIssue::Severity::Error, "$.transitions[0].rare.p", "strictly between"));
+            T_VERIFY(hasIssue(r, LoadIssue::Severity::Error, "$.transitions[1].rare.p", "strictly between"));
+            T_VERIFY(hasIssue(r, LoadIssue::Severity::Error, "$.transitions[2].rare.attempts", "integer >= 1"));
+            T_VERIFY(hasIssue(r, LoadIssue::Severity::Error, "$.transitions[3].rare.wait-for", "integer >= 0"));
+            T_VERIFY(hasIssue(r, LoadIssue::Severity::Error, "$.transitions[4].rare", "true or an object"));
+        }
+    }
+
     void unsupportedVersionIsRejected()
     {
         std::string doc = makeDoc();
@@ -941,6 +1007,8 @@ int main()
     T_RUN(TstJsonNetLoader, commandNeedsVisibleStep);  // GLM-5.3-Flash
     T_RUN(TstJsonNetLoader, syncKeyIsParsed);  // DeepSeek V4.1 Flash
     T_RUN(TstJsonNetLoader, syncKeyIsRejectedWhereItDoesNotApply);  // DeepSeek V4.1 Flash
+    T_RUN(TstJsonNetLoader, rareKeyFormsAreParsed);  // DeepSeek V4.1 Flash
+    T_RUN(TstJsonNetLoader, rareKeyIsValidatedAndNeedsVisibility);  // DeepSeek V4.1 Flash
     T_RUN(TstJsonNetLoader, unsupportedVersionIsRejected);
     T_RUN(TstJsonNetLoader, syntaxErrorReportsPosition);
     T_RUN(TstJsonNetLoader, topLevelMustBeObject);

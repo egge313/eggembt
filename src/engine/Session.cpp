@@ -69,6 +69,7 @@ SessionConfig normalized(SessionConfig c, const Net &net)
 {
     c.suggester.targets = c.targets;
     c.suggester.tieBreakSeed = c.selectionSeed;  // GLM-5.3-Flash
+    c.suggester.huntRare = c.huntRare;  // DeepSeek V4.1 Flash: the rare hunt
     c.ants.targets = c.targets;
     // GLM-5.3-Flash: the carry-over factor of the restored pheromones
     // (doku section 16), kept in 0..100 for direct API users.
@@ -464,6 +465,13 @@ RunReport Session::runOnce(ISutPlugin &plugin)
     Clock::time_point lastActivity = Clock::now();
     bool changed = true;      // something happened since the last suggestion
     bool waiting = false;     // the last suggestion was to wait for the SUT
+    // DeepSeek V4.1 Flash: the rare dwell (doku section 30). While dwellUntil
+    // is set the run stays in the current state and listens; a real event ends
+    // the dwell early, the deadline ends it normally, and the idle timeout is
+    // suspended. A non-empty dwellSendLabel belongs to a controllable rare
+    // input: the stimulus is withheld until the dwell has elapsed.
+    std::optional<Clock::time_point> dwellUntil;
+    std::string dwellSendLabel;
     std::optional<std::size_t> inError;
     std::optional<TransitionIndex> inErrorTransition;  // GLM-5.3-Flash: reaction-once guard
     std::optional<std::size_t> milestoneDepositedAt;   // GLM-5.3-Flash: tracker event count of the last milestone deposit
@@ -753,6 +761,33 @@ RunReport Session::runOnce(ISutPlugin &plugin)
             break;
         }
 
+        // DeepSeek V4.1 Flash: the rare dwell (doku section 30). When the
+        // wait-for has elapsed, a withheld controllable input goes out now;
+        // a dwell of the SUT's own rare move simply re-plans. A real event
+        // ended the dwell early above. The idle timeout is suspended while
+        // dwellUntil is set (the SUT is deliberately left alone), so the
+        // deadline is the one clock that matters here.
+        if (dwellUntil && Clock::now() >= *dwellUntil) {
+            dwellUntil.reset();
+            tracker_.setSilenceExpected(false);
+            lastActivity = Clock::now();  // the deliberate silence was intended: not idleness
+            if (!dwellSendLabel.empty()) {
+                const std::string label = dwellSendLabel;
+                dwellSendLabel.clear();
+                if (plugin.stimulate(label, &err)) {
+                    ++pending;
+                    sentAt = Clock::now();
+                    ++rep.stimuli;
+                } else {
+                    finish(RunOutcome::Aborted, "could not send input '" + label + "': " + err,
+                           StopReason::Aborted);
+                    break;
+                }
+            } else {
+                changed = true;  // the dwell is over: ask for the next suggestion
+            }
+        }
+
         queue_.waitForEvents(cfg_.poll);  // returns at once if events are queued
         // GLM-5.3-Flash: pumped one event at a time so every model-known
         // Observed event can be credited as "taken" (the offered/taken
@@ -760,6 +795,9 @@ RunReport Session::runOnce(ISutPlugin &plugin)
         // pumpEvents call would have returned.
         PumpResult pump;
         bool sawDied = false;  // GLM-5.3-Flash: a Died event came through this pump
+        // DeepSeek V4.1 Flash: a real event -- not the SUT's own quiescence
+        // report -- ends a rare dwell early (doku section 30).
+        bool dwellActivity = false;
         for (;;) {
             const PumpResult one = pumpEvents(queue_, tracker_, 1);
             if (one.processed == 0)
@@ -812,6 +850,10 @@ RunReport Session::runOnce(ISutPlugin &plugin)
             // GLM-5.3-Flash: the plug-in reported the SUT died on its own.
             if (one.lastKind == EventKind::Died)
                 sawDied = true;
+            // DeepSeek V4.1 Flash: the SUT actually did something. A
+            // Quiescent report is the silence a dwell is waiting through.
+            if (one.lastKind == EventKind::Observed || one.lastKind == EventKind::Died)
+                dwellActivity = true;
             // GLM-5.3-Flash: the credited stream may have grown with this
             // event: the T-suffix cascade, the crash attempts and the command
             // hooks follow it per event, so a hook's "when" guard reads the
@@ -836,8 +878,20 @@ RunReport Session::runOnce(ISutPlugin &plugin)
         }
         if (pump.processed > 0) {
             lastActivity = Clock::now();
-            changed = true;
+            // DeepSeek V4.1 Flash: a quiescence report during a rare dwell is
+            // the silence the dwell is about, not a reason to re-plan. It may
+            // still have narrowed the tracker's belief (unless the dwell flag
+            // suppressed it); the dwell itself runs to its deadline or to a
+            // real event.
+            if (!dwellUntil || dwellActivity)
+                changed = true;
             offeredThisEpisode = false;  // GLM-5.3-Flash: the next wait is a new episode
+        }
+        if (dwellActivity && dwellUntil) {
+            dwellUntil.reset();
+            dwellSendLabel.clear();  // the state moved on: the withheld input no longer belongs here
+            tracker_.setSilenceExpected(false);
+            lastActivity = Clock::now();
         }
         pending -= std::min(pending, pump.stimulated);
 
@@ -1120,7 +1174,10 @@ RunReport Session::runOnce(ISutPlugin &plugin)
         if (!changed) {
             // DeepSeek V4.1 Flash: a paused or down SUT is expected to be silent
             // (doku section 26); the idle timeout is a fault only while it runs.
-            if (waiting && cfg_.idleTimeout.count() > 0
+            // DeepSeek V4.1 Flash: a rare dwell is deliberate silence, not a
+            // missing output: the idle timeout is suspended until it ends
+            // (doku section 30).
+            if (waiting && !dwellUntil && cfg_.idleTimeout.count() > 0
                 && tracker_.lifecycleGate() == LifecycleGate::Running
                 && Clock::now() - lastActivity > cfg_.idleTimeout)
                 finish(RunOutcome::Aborted,
@@ -1140,6 +1197,24 @@ RunReport Session::runOnce(ISutPlugin &plugin)
         waiting = false;
         switch (s.status) {
         case SuggestionStatus::Suggest:
+            // DeepSeek V4.1 Flash: a controllable rare input is withheld for
+            // its wait-for at the enabling state before it is sent (doku
+            // section 30). Beginning the dwell is the attempt; a real event
+            // during the dwell cancels the send because the state moved on.
+            if (s.dwell.count() > 0) {
+                db_.noteRareAttempt(s.transition);
+                dwellUntil = Clock::now() + s.dwell;
+                dwellSendLabel = s.label;
+                tracker_.setSilenceExpected(true);
+                break;
+            }
+            // A rare input sent without a dwell is its own attempt.
+            if (cfg_.huntRare && s.transition < net_.transitions.size()) {
+                const Transition &tr = net_.transitions[s.transition];
+                if (tr.rare && db_.transitionHits(s.transition) == 0
+                    && db_.rareAttempts(s.transition) < tr.rare->attempts)
+                    db_.noteRareAttempt(s.transition);
+            }
             if (plugin.stimulate(s.label, &err)) {
                 ++pending;
                 sentAt = Clock::now();
@@ -1148,6 +1223,17 @@ RunReport Session::runOnce(ISutPlugin &plugin)
                 finish(RunOutcome::Aborted, "could not send input '" + s.label + "': " + err,
                        StopReason::Aborted);
             }
+            break;
+        case SuggestionStatus::Dwell:
+            // DeepSeek V4.1 Flash: a rare transition of the SUT is enabled
+            // here. Stay put for its wait-for and let silence do the work
+            // (doku section 30); every dwell is one attempt, even when the
+            // same run dwells again.
+            db_.noteRareAttempt(s.transition);
+            dwellUntil = Clock::now() + s.dwell;
+            dwellSendLabel.clear();
+            tracker_.setSilenceExpected(true);
+            waiting = true;
             break;
         case SuggestionStatus::Wait:
             // GLM-5.3-Flash: a wait episode OFFERS the SUT every move the
@@ -1366,6 +1452,11 @@ CampaignReport Session::runCampaign(ISutPlugin &plugin)
             break;
         }
         if (r.coverageDone) {
+            // DeepSeek V4.1 Flash: rare transitions outrank coverage (doku
+            // section 30). An unseen rare transition with attempts left keeps
+            // the campaign alive; the run limits stay hard limits.
+            if (cfg_.huntRare && rareHuntPending())
+                continue;
             report.complete = true;
             report.stopReason = "coverage complete";
             break;
@@ -1382,6 +1473,15 @@ CampaignReport Session::runCampaign(ISutPlugin &plugin)
     deadline_.reset();  // DeepSeek V4.1 Flash: the budget belongs to this campaign
     if (report.stopReason.empty())
         report.stopReason = stop_ ? "stopped on request" : "run limit reached";
+    // DeepSeek V4.1 Flash: say so when the campaign was still hunting and a
+    // hard limit cut it short (doku section 30) -- a silent "coverage complete"
+    // would misrepresent a rare hunt.
+    if (cfg_.huntRare && rareHuntPending()) {
+        if (report.stopReason == "run limit reached")
+            report.stopReason = "run limit reached; rare transitions still unseen";
+        else if (report.stopReason == "time budget reached")
+            report.stopReason = "time budget reached; rare transitions still unseen";
+    }
     report.summary = db_.summary();
     // GLM-5.3-Flash: wall-clock time of the whole campaign, so campaigns (e.g.
     // under different seeds) can be compared by how much testing a second buys.

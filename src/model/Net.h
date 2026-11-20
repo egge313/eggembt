@@ -193,6 +193,30 @@ struct CommandHook {
     PlaceIndex when = kNoPlace;          // kNoPlace: no guard
 };
 
+// DeepSeek V4.1 Flash: a transition that fires only with a very low probability.
+// Egge: "It is possible that there are transitions, which fire with a very low
+// probability. It should be possible to mark them as such, and it would be a
+// good idea to have an option to hunt them down even if this meant that the
+// rest of the RG exceeds permissible coverage." The marker is descriptive plus
+// a bounded hunting budget; --hunt-rare decides whether a campaign chases it.
+//
+//   p          the declared probability, strictly in (0,1). The engine cannot
+//              observe the SUT's real probability, so this is reported (and is
+//              a promise by the modeller), not used for scheduling.
+//   attempts   how many dwells / sends the hunt may spend on this transition
+//              over one campaign. Every dwell counts, even several within one
+//              run (Egge: "Every dwell, even within one run").
+//   waitForMs  how long a dwell at the enabling state lasts (milliseconds).
+//              0 means "do not dwell"; the hunt then only steers the campaign
+//              towards the transition. A dwell ends early on any real event
+//              (a quiescence report is not an event: it is the silence the
+//              dwell is about).
+struct RareSpec {
+    double p = 0.001;
+    std::uint32_t attempts = 100;
+    std::uint32_t waitForMs = 0;
+};
+
 struct Transition {
     std::string id;
     std::string label;  // maps to a SUT action/event; may be empty for Internal
@@ -267,6 +291,12 @@ struct Transition {
     // carry one because their steps are never visible to the tester (the
     // loader rejects that, exactly as for "error" and "milestone").
     std::optional<CommandHook> command;
+
+    // DeepSeek V4.1 Flash: the transition is rare (see RareSpec). Same
+    // visibility rule as "error", "milestone" and "crash": an untraced
+    // internal step is never seen, so it cannot be hunted. The campaign only
+    // chases it with --hunt-rare; without that switch the marker is inert.
+    std::optional<RareSpec> rare;
 
     // All three lists are sorted by place index.
     std::vector<WeightedArc> pre;      // normal input arcs: need m(p) >= w, consume w

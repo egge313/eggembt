@@ -130,6 +130,13 @@ struct SessionConfig {
     // per finished run.
     bool evaporateBetweenRuns = false;
 
+    // DeepSeek V4.1 Flash: hunt the transitions the model marks "rare"
+    // (--hunt-rare, doku section 30). Rare goals outrank everything else, an
+    // enabled SUT-move rare transition is given its wait-for as a dwell, and
+    // the campaign does not call itself coverage-complete while an unseen rare
+    // transition still has attempts left. Off is the historical behaviour.
+    bool huntRare = false;
+
     // GLM-5.3-Flash: seed for the suggester's tie-breaks. 0 (the default)
     // keeps the fully deterministic choice: among equally scored inputs the
     // more robust one wins, then the lower transition index. A non-zero seed
@@ -248,6 +255,18 @@ public:
     // GLM-5.3-Flash: whether ant-colony guidance takes part in this session
     // (switched off with --no-ants or SessionConfig::useAnts = false).
     bool antsEnabled() const { return cfg_.useAnts; }
+
+    // DeepSeek V4.1 Flash: is a rare transition still unseen and still within
+    // its attempt budget? With --hunt-rare an otherwise complete campaign
+    // keeps running while this is true (doku section 30).
+    bool rareHuntPending() const
+    {
+        for (std::size_t t = 0; t < net_.transitions.size(); ++t)
+            if (net_.transitions[t].rare && db_.transitionHits(static_cast<TransitionIndex>(t)) == 0
+                && db_.rareAttempts(static_cast<TransitionIndex>(t)) < net_.transitions[t].rare->attempts)
+                return true;
+        return false;
+    }
 
     // GLM-5.3-Flash: the configuration this session was built with, so the
     // report can say which switches steered the campaign (target policies,

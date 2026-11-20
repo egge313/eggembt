@@ -8,8 +8,14 @@
 //
 // v0.0.2 (19 November 2026): PNML export, the testing-strategy options (goal
 // and error priorities, a wall-clock campaign budget), pheromone evaporation
-// between runs, the optional satisfied-target phase veto, and the T-list ->
-// T-suffix rename (doku sections 27 and 28).
+// between runs, and the T-list -> T-suffix rename (doku §27).
+//
+// v0.0.3 (19 November 2026): the optional satisfied-target phase policy
+// (--satisfied-target-policy, doku §28).
+//
+// v0.0.4 (19 November 2026): rare transitions and the hunt (the "rare" model
+// key, --hunt-rare, dwells and attempt budgets, doku §30), plus the measured
+// evaporation plateau (doku §31).
 #pragma once
 
-#define EGGEMBT_VERSION "v0.0.2"
+#define EGGEMBT_VERSION "v0.0.4"

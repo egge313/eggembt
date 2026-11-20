@@ -262,6 +262,22 @@ public:
     std::uint64_t transitionHits(TransitionIndex t) const { return transitionHits_[t]; }
     std::uint64_t placeVisits(PlaceIndex p) const { return placeVisits_[p]; }
 
+    // DeepSeek V4.1 Flash: the rare hunt's attempt budget (doku section 30).
+    // A transition marked "rare" is unseen while transitionHits(t) == 0; every
+    // dwell (or, for a controllable rare input, every send without a dwell)
+    // counts one attempt. The count is campaign-scoped and is NOT persisted in
+    // the run log: a continued campaign starts the budget fresh, while the
+    // seen/not-seen fact is rebuilt from transitionHits as usual.
+    std::uint32_t rareAttempts(TransitionIndex t) const
+    {
+        return t < rareAttempts_.size() ? rareAttempts_[t] : 0;
+    }
+    void noteRareAttempt(TransitionIndex t)
+    {
+        if (t < rareAttempts_.size())
+            ++rareAttempts_[t];
+    }
+
     bool isSaturated(StateId s) const { return state(s).definite >= cfg_.threshold; }
     bool isSaturatedEdge(EdgeId e) const { return edge(e).definite >= cfg_.threshold; }
 
@@ -346,6 +362,9 @@ private:
     CoverageConfig cfg_;
 
     std::vector<std::uint64_t> transitionHits_;
+    // DeepSeek V4.1 Flash: the rare hunt's attempts per transition (doku
+    // section 30); campaign-scoped, not part of the run log.
+    std::vector<std::uint32_t> rareAttempts_;
 
     // GLM-5.3-Flash: offered/taken counts per SUT-move label (see above).
     std::unordered_map<std::string, MoveStat> moveStats_;

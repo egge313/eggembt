@@ -131,6 +131,13 @@ public:
     bool runActive() const { return active_; }
     std::size_t eventCount() const { return eventCount_; }
 
+    // DeepSeek V4.1 Flash: while a rare dwell is in progress (doku section
+    // 30), the SUT is deliberately left alone: a Quiescent event is the
+    // silence the dwell is waiting through, not a missing output. onEvent
+    // still records the event but does not narrow the belief, declare a
+    // deadlock or deviate. The session sets this around a dwell.
+    void setSilenceExpected(bool on) { silenceExpected_ = on; }
+
     // --- what is known now ---------------------------------------------------
 
     const std::vector<StateId> &belief() const { return belief_; }  // sorted
@@ -257,6 +264,7 @@ private:
 
     bool active_ = false;
     std::size_t eventCount_ = 0;
+    bool silenceExpected_ = false;  // DeepSeek V4.1 Flash: a rare dwell is in progress
     std::vector<StateId> belief_;
 
     // DeepSeek V4.1 Flash: the run's initial marking (the landing of an

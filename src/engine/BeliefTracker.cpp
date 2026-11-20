@@ -170,6 +170,7 @@ void BeliefTracker::beginRun(std::size_t initialMarkingIndex, std::string note)
     baseCredited_ = false;
     eventCount_ = 0;
     active_ = true;
+    silenceExpected_ = false;  // DeepSeek V4.1 Flash: no dwell until the session starts one
 
     visited_.clear();
     clockStarted_ = false;
@@ -192,6 +193,7 @@ void BeliefTracker::endRun(RunOutcome outcome, std::string detail)
     if (db_)
         db_->endRun(outcome, std::move(detail));
     active_ = false;
+    silenceExpected_ = false;  // DeepSeek V4.1 Flash: the dwell dies with the run
     belief_.clear();
     segment_.clear();
 }
@@ -267,7 +269,10 @@ StepResult BeliefTracker::onEvent(const SutEvent &ev)
     case EventKind::Quiescent:
         // DeepSeek V4.1 Flash: a paused or down SUT is expected to be silent
         // (doku section 26): no narrowing, no deadlock verdict, no deviation.
-        if (gate_ == LifecycleGate::Running)
+        // The same holds during a rare dwell (doku section 30): the session
+        // deliberately stays put, so silence is the expected state, not a
+        // missing output.
+        if (gate_ == LifecycleGate::Running && !silenceExpected_)
             result = handleQuiescence();
         break;
     case EventKind::Died:

@@ -13,6 +13,7 @@ CoverageDb::CoverageDb(const ReachabilityGraph &rg, CoverageConfig cfg)
     : rg_(rg),
       cfg_(cfg),
       transitionHits_(rg.net().transitions.size(), 0),
+      rareAttempts_(rg.net().transitions.size(), 0),  // DeepSeek V4.1 Flash: the rare hunt
       placeVisits_(rg.net().places.size(), 0),
       errorHits_(rg.net().errorMarkings.size(), 0),
       targetHits_(rg.net().targetMarkings.size(), 0),

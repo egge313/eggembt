@@ -504,6 +504,30 @@ JsonValue campaignJson(const Net &net, const Session &session, const CampaignRep
     // DeepSeek V4.1 Flash: where the pheromone ages, and the campaign budget.
     o.set("evaporate_between_runs", JsonValue::boolean(session.config().evaporateBetweenRuns));
     o.set("time_budget_ms", JsonValue::number(static_cast<double>(session.config().timeBudget.count())));
+    // DeepSeek V4.1 Flash: the rare hunt (doku section 30). Both keys are
+    // always emitted so the schema does not depend on the model or the option.
+    o.set("hunt_rare", JsonValue::boolean(session.config().huntRare));
+    {
+        const CoverageDb &db = session.coverage();
+        JsonValue rare = JsonValue::array();
+        for (std::size_t t = 0; t < net.transitions.size(); ++t) {
+            const Transition &tr = net.transitions[t];
+            if (!tr.rare)
+                continue;
+            const auto ti = static_cast<TransitionIndex>(t);
+            JsonValue j = JsonValue::object();
+            j.set("transition", JsonValue::string(tr.id));
+            if (!tr.label.empty())
+                j.set("label", JsonValue::string(tr.label));
+            j.set("p", JsonValue::number(tr.rare->p));
+            j.set("attempts", JsonValue::number(static_cast<double>(tr.rare->attempts)));
+            j.set("wait_for_ms", JsonValue::number(static_cast<double>(tr.rare->waitForMs)));
+            j.set("seen", JsonValue::boolean(db.transitionHits(ti) > 0));
+            j.set("attempts_used", JsonValue::number(static_cast<double>(db.rareAttempts(ti))));
+            rare.push(j);
+        }
+        o.set("rare_transitions", rare);
+    }
 
     JsonValue warnings = JsonValue::array();
     for (const std::string &w : report.warnings)

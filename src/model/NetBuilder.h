@@ -174,6 +174,15 @@ public:
         return *this;
     }
 
+    // DeepSeek V4.1 Flash: mark a transition as rare (the "rare" key of the
+    // JSON). The transition must be visible to the tester -- build() does not
+    // check that; the loaders do, mirroring "error", "milestone" and "crash".
+    NetBuilder &rare(TransitionIndex t, RareSpec spec = {})
+    {
+        net_.transitions.at(t).rare = spec;
+        return *this;
+    }
+
     // GLM-5.3-Flash: predict a nondeterministic SUT crash while the SUT is
     // certainly in a named marking of the target or error list (the two lists
     // the tracker can be "certainly in"; the loaders reject it on initial

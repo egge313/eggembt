@@ -972,6 +972,155 @@ static void testGoalPriorityFlipsTheChoice()
     CHECK(firstPick(coverage) == "b");
 }
 
+// DeepSeek V4.1 Flash: the rare hunt (doku section 30). A rare transition is a
+// goal of its own: it outranks fresh coverage, an enabled SUT move is dwelt
+// on for its wait-for, the attempt budget ends the hunt, and a controllable
+// rare input carries the dwell as a delay before it is sent.
+static void testRareHuntGoalsAndBudgets()
+{
+    {   // A fresh one-step discovery competes with a rare transition two steps
+        // away. Without the hunt the fresh edge wins; with it the rare source
+        // does -- even though a fresh transition is nearer.
+        NetBuilder b;
+        const auto p = b.place("p");
+        const auto m = b.place("m");
+        const auto other = b.transition("other", TransitionKind::Controllable, "other");
+        const auto go = b.transition("go", TransitionKind::Controllable, "go");
+        const auto pop = b.transition("pop", TransitionKind::Observable, "pop");
+        b.input(p, other).output(other, p);
+        b.input(p, go).output(go, m);
+        b.input(m, pop).output(pop, p);
+        b.rare(pop, RareSpec{0.01, 5, 1000});
+        b.initial("start", {{p, 1}});
+        const Net net = b.build();
+
+        ReachabilityGraph rg(net);
+        rg.addInitial(0);
+        rg.exploreAll();
+        CoverageDb db(rg);
+
+        Suggester plain(rg, db);
+        BeliefTracker tr(rg, &db);
+        tr.beginRun(0);
+        const Suggestion normal = plain.suggest(tr);
+        CHECK(normal.status == SuggestionStatus::Suggest);
+        CHECK(normal.label == "other");  // the marker is inert without the hunt
+        tr.endRun(RunOutcome::Completed);
+
+        SuggesterConfig hunt;
+        hunt.huntRare = true;
+        Suggester hunter(rg, db, hunt);
+        BeliefTracker tr2(rg, &db);
+        tr2.beginRun(0);
+        const Suggestion rare = hunter.suggest(tr2);
+        CHECK(rare.status == SuggestionStatus::Suggest);
+        CHECK(rare.label == "go");
+        CHECK(rare.goal == GoalTier::Rare);
+        tr2.endRun(RunOutcome::Completed);
+    }
+    {   // An enabled SUT move marked rare: dwell at the enabling state for its
+        // wait-for. The attempt budget bounds the hunt, and wait-for 0 makes it
+        // stay put and listen instead of dwelling.
+        const auto makeNet = [](std::uint32_t waitForMs) {
+            NetBuilder b;
+            const auto s0 = b.place("s0");
+            const auto s1 = b.place("s1");
+            const auto spin = b.transition("spin", TransitionKind::Controllable, "spin");
+            const auto blip = b.transition("blip", TransitionKind::Observable, "blip");
+            const auto back = b.transition("back", TransitionKind::Observable, "back");
+            b.input(s0, spin).output(spin, s0);
+            b.input(s0, blip).output(blip, s1);
+            b.input(s1, back).output(back, s0);
+            b.rare(blip, RareSpec{0.01, 3, waitForMs});
+            b.initial("start", {{s0, 1}});
+            return b.build();
+        };
+        {
+            const Net net = makeNet(60000);
+            ReachabilityGraph rg(net);
+            rg.addInitial(0);
+            rg.exploreAll();
+            CoverageDb db(rg);
+            const TransitionIndex blip = *net.findTransition("blip");
+
+            SuggesterConfig cfg;
+            cfg.huntRare = true;
+            Suggester hunter(rg, db, cfg);
+            BeliefTracker tr(rg, &db);
+            tr.beginRun(0);
+            const Suggestion d = hunter.suggest(tr);
+            CHECK(d.status == SuggestionStatus::Dwell);
+            CHECK(d.transition == blip);
+            CHECK(d.goal == GoalTier::Rare);
+            CHECK(d.dwell == std::chrono::milliseconds(60000));
+            tr.endRun(RunOutcome::Completed);
+
+            // Three dwells are the model's budget; then the ordinary guidance
+            // takes over (the != blip catches a dwell-looking fallback too).
+            for (int i = 0; i < 3; ++i)
+                db.noteRareAttempt(blip);
+            CHECK(db.rareAttempts(blip) == 3u);
+            Suggester spent(rg, db, cfg);
+            BeliefTracker tr2(rg, &db);
+            tr2.beginRun(0);
+            const Suggestion s = spent.suggest(tr2);
+            CHECK(s.status != SuggestionStatus::Dwell);
+            CHECK(s.goal != GoalTier::Rare);
+            CHECK(s.label == "spin");  // the ordinary uncovered edge
+            tr2.endRun(RunOutcome::Completed);
+        }
+        {   // wait-for 0: no dwell, but the hunt still stays put and listens.
+            const Net net = makeNet(0);
+            ReachabilityGraph rg(net);
+            rg.addInitial(0);
+            rg.exploreAll();
+            CoverageDb db(rg);
+            const TransitionIndex blip = *net.findTransition("blip");
+
+            SuggesterConfig cfg;
+            cfg.huntRare = true;
+            Suggester hunter(rg, db, cfg);
+            BeliefTracker tr(rg, &db);
+            tr.beginRun(0);
+            const Suggestion w = hunter.suggest(tr);
+            CHECK(w.status == SuggestionStatus::Wait);
+            CHECK(w.transition == blip);
+            CHECK(w.goal == GoalTier::Rare);
+            tr.endRun(RunOutcome::Completed);
+        }
+    }
+    {   // A controllable rare transition is a suggestion with a delay: the
+        // input goes out only after the wait-for at the enabling state.
+        NetBuilder b;
+        const auto s0 = b.place("s0");
+        const auto s1 = b.place("s1");
+        const auto blip = b.transition("blip", TransitionKind::Controllable, "blip");
+        const auto spin = b.transition("spin", TransitionKind::Controllable, "spin");
+        b.input(s0, blip).output(blip, s1);
+        b.input(s0, spin).output(spin, s0);
+        b.rare(blip, RareSpec{0.01, 2, 250});
+        b.initial("start", {{s0, 1}});
+        const Net net = b.build();
+
+        ReachabilityGraph rg(net);
+        rg.addInitial(0);
+        rg.exploreAll();
+        CoverageDb db(rg);
+
+        SuggesterConfig cfg;
+        cfg.huntRare = true;
+        Suggester hunter(rg, db, cfg);
+        BeliefTracker tr(rg, &db);
+        tr.beginRun(0);
+        const Suggestion s = hunter.suggest(tr);
+        CHECK(s.status == SuggestionStatus::Suggest);
+        CHECK(s.label == "blip");
+        CHECK(s.goal == GoalTier::Rare);
+        CHECK(s.dwell == std::chrono::milliseconds(250));
+        tr.endRun(RunOutcome::Completed);
+    }
+}
+
 // ---------------------------------------------------------------------------
 
 int main()
@@ -997,6 +1146,7 @@ int main()
         {"seededTieBreaksVaryAndReproduce", testSeededTieBreaksVaryAndReproduce},  // GLM-5.3-Flash
         {"robustnessWeightsTheEnvironmentByTakeRate", testTheRobustnessWeightsTheEnvironmentByTakeRate},  // GLM-5.3-Flash
         {"goalPriorityFlipsTheChoice", testGoalPriorityFlipsTheChoice},  // DeepSeek V4.1 Flash
+        {"rareHuntGoalsAndBudgets", testRareHuntGoalsAndBudgets},  // DeepSeek V4.1 Flash
     };
     for (const auto &t : tests) {
         const int before = g_failures;

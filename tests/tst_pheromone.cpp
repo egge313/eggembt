@@ -20,6 +20,11 @@
 // without --evaporate-between-runs: per-suggestion aging largely forgets a
 // lesson within a long run, aging at run boundaries keeps it (doku section 27).
 //
+// The third (DeepSeek V4.1 Flash) sweeps the evaporation rates themselves and
+// pins the measured plateau: 0.005 to 0.10 per suggestion give the same
+// outcome here, because the fork is reached about five suggestions after the
+// deposit; the run boundary still matters (doku section 31).
+//
 // The SUT is a synchronous plug-in (it applies the input while stimulate()
 // runs and pushes its events at once): no thread and no SUT-side moves, so the
 // benchmark measures the engine's own guidance work. The model is
@@ -32,7 +37,9 @@
 #include "engine/SutPlugin.h"
 #include "model/NetBuilder.h"
 
+#include <algorithm>  // DeepSeek V4.1 Flash: the evaporation sweep's maxStimuli
 #include <chrono>
+#include <cmath>  // DeepSeek V4.1 Flash: the retention figures in the sweep
 #include <cstdio>
 #include <map>
 #include <string>
@@ -229,6 +236,9 @@ struct Guidance {
     std::size_t tsuffix = 0;
     const char *name = "";
     bool betweenRuns = false;  // DeepSeek V4.1 Flash
+    // DeepSeek V4.1 Flash: the evaporation sweep (doku section 31).
+    double evaporationAttract = 0.10;
+    double evaporationRepel = 0.02;
 };
 
 struct Outcome {
@@ -237,6 +247,7 @@ struct Outcome {
     std::size_t crashes = 0;
     std::size_t covered = 0;
     std::size_t longRuns = 0;  // runs that reached at least half the event budget
+    std::size_t maxStimuli = 0;  // suggestions in the longest run (DeepSeek V4.1 Flash)
     std::int64_t wallMs = 0;
 };
 
@@ -248,6 +259,9 @@ Outcome runCampaign(const Net &net, const Guidance &guidance, std::uint64_t seed
     cfg.useAnts = guidance.ants;
     cfg.ants.seed = seed;
     cfg.ants.tsuffixLength = guidance.tsuffix;
+    // DeepSeek V4.1 Flash: the evaporation sweep (doku section 31).
+    cfg.ants.evaporationAttract = guidance.evaporationAttract;
+    cfg.ants.evaporationRepel = guidance.evaporationRepel;
     cfg.selectionSeed = seed;
     cfg.coverage.crashAttempts = 2;
     cfg.poll = std::chrono::milliseconds(0);
@@ -270,6 +284,7 @@ Outcome runCampaign(const Net &net, const Guidance &guidance, std::uint64_t seed
             ++o.crashes;
         if (r.events >= static_cast<std::size_t>(maxEvents) / 2)
             ++o.longRuns;
+        o.maxStimuli = std::max(o.maxStimuli, r.stimuli);  // DeepSeek V4.1 Flash: the run interval
     }
     o.covered = rep.summary.edgesCovered;
     return o;
@@ -383,6 +398,179 @@ void testEvaporationBetweenRunsKeepsProgress()
     }
 }
 
+// DeepSeek V4.1 Flash: the evaporation sweep (doku section 31). The endpoints
+// were pinned above (2 % per suggestion, 2 % per run); this one moves the
+// parameters gradually and records what the benchmark actually does.
+//
+// Measured, and now asserted: the per-suggestion repel rate from 0.005 to 0.10
+// does not move the outcome at all -- 3 crashes and 3 productive runs of 6,
+// about 586 covered edges -- even though the nominal retention over a 200-event
+// run falls from 37 % to essentially zero. The fork is reached about five
+// suggestions after a run starts, and the lesson was laid at the previous run's
+// end, so only that short interval has to be survived, not the whole run. Two
+// overlapping protections carry it: the (marking, T-suffix) pair repel and the
+// attract of the safe route around the crash. The run boundary still matters
+// (2 crashes, 4 productive runs, about 777 edges), and the same rate x run
+// length keeps the same outcome. A cliff would need a much longer interval
+// between the deposit and the fork, or a much weaker deposit; that is a
+// calibration this benchmark deliberately does not manufacture.
+void testEvaporationParametersSitOnAPlateau()
+{
+    constexpr int kRegion = 1000;
+    constexpr int kMaxEvents = 200;
+    constexpr int kMaxRuns = 6;
+    const std::uint64_t kGraphSeed = 7;
+    const Net net = makeDiamondNet(kRegion, kGraphSeed);
+    const double kRates[] = {0.005, 0.01, 0.02, 0.05, 0.10};
+    const std::uint64_t kSeeds[] = {1, 2};
+
+    std::printf("evaporation sweep: %d runs of %d events, graph seed %llu, tsuffix 4\n", kMaxRuns,
+                kMaxEvents, (unsigned long long)kGraphSeed);
+
+    struct Row {
+        double rate;
+        bool betweenRuns;
+        std::uint64_t seed;
+        Outcome outcome;
+    };
+    std::vector<Row> rows;
+
+    for (std::uint64_t seed : kSeeds) {
+        for (double rate : kRates) {
+            Guidance g;
+            g.ants = true;
+            g.tsuffix = 4;
+            g.name = "per suggestion";
+            g.evaporationRepel = rate;
+            rows.push_back({rate, false, seed, runCampaign(net, g, seed, kMaxEvents, kMaxRuns)});
+        }
+        for (double rate : {0.02, 0.10}) {
+            Guidance g;
+            g.ants = true;
+            g.tsuffix = 4;
+            g.name = "between runs";
+            g.betweenRuns = true;
+            g.evaporationRepel = rate;
+            rows.push_back({rate, true, seed, runCampaign(net, g, seed, kMaxEvents, kMaxRuns)});
+        }
+    }
+
+    for (const Row &r : rows) {
+        const double retention = std::pow(1.0 - r.rate, r.betweenRuns ? 1.0 : static_cast<double>(r.outcome.maxStimuli));
+        std::printf("  rate %.3f %-14s seed %llu crashes %zu long %zu covered %zu maxStimuli %zu retention %.4f\n",
+                    r.rate, r.betweenRuns ? "between runs" : "per suggestion", (unsigned long long)r.seed,
+                    r.outcome.crashes, r.outcome.longRuns, r.outcome.covered, r.outcome.maxStimuli, retention);
+    }
+
+    // The scaling pair: the same per-run loss of repel, twice the run length.
+    struct ScaleRow {
+        double rate;
+        int events;
+        std::uint64_t seed;
+        Outcome outcome;
+    };
+    std::vector<ScaleRow> scaling;
+    std::printf("evaporation scaling: (rate, events)\n");
+    for (std::uint64_t seed : kSeeds) {
+        for (const std::pair<double, int> &p : {std::pair<double, int>{0.04, 100}, std::pair<double, int>{0.02, 200}}) {
+            Guidance g;
+            g.ants = true;
+            g.tsuffix = 4;
+            g.name = "scaling";
+            g.evaporationRepel = p.first;
+            const Outcome o = runCampaign(net, g, seed, p.second, kMaxRuns);
+            std::printf("  rate %.3f events %d seed %llu crashes %zu long %zu covered %zu maxStimuli %zu\n",
+                        p.first, p.second, (unsigned long long)seed, o.crashes, o.longRuns, o.covered, o.maxStimuli);
+            scaling.push_back({p.first, p.second, seed, o});
+        }
+    }
+
+    // The other edge of the plateau: a much faster attract decay. Even this
+    // does not move the choice in this benchmark; the goal attract is re-laid
+    // and the pair layer carries the lesson.
+    std::vector<Outcome> attract;
+    std::printf("evaporation attract side:\n");
+    for (std::uint64_t seed : kSeeds) {
+        Guidance g;
+        g.ants = true;
+        g.tsuffix = 4;
+        g.name = "attract 0.50";
+        g.evaporationAttract = 0.50;
+        const Outcome o = runCampaign(net, g, seed, kMaxEvents, kMaxRuns);
+        std::printf("  rate attract 0.500 seed %llu crashes %zu long %zu covered %zu maxStimuli %zu\n",
+                    (unsigned long long)seed, o.crashes, o.longRuns, o.covered, o.maxStimuli);
+        attract.push_back(o);
+    }
+
+    // --- the measured plateau ------------------------------------------------------------
+    for (std::uint64_t seed : kSeeds) {
+        std::vector<const Row *> per;
+        std::vector<const Row *> between;
+        for (const Row &r : rows) {
+            if (r.seed != seed)
+                continue;
+            (r.betweenRuns ? between : per).push_back(&r);
+        }
+        CHECK(per.size() == 5);
+        CHECK(between.size() == 2);
+        if (per.empty() || between.empty())
+            continue;
+
+        // Every per-suggestion rate lands on the same outcome: same crashes,
+        // same productive runs, coverage within the one-edge tie-break wobble.
+        for (const Row *r : per) {
+            CHECK(r->outcome.crashes == per.front()->outcome.crashes);
+            CHECK(r->outcome.longRuns == per.front()->outcome.longRuns);
+            CHECK(r->outcome.covered + 1 >= per.front()->outcome.covered);
+            CHECK(r->outcome.covered <= per.front()->outcome.covered + 1);
+            // The nominal retention over the longest run is tiny at the top
+            // rates -- the flat outcome is not because the run was short.
+            CHECK(r->outcome.maxStimuli >= 100);
+        }
+        CHECK(per.front()->outcome.crashes == 3);
+        CHECK(per.front()->outcome.longRuns == 3);
+
+        // Aging at the run boundary is still visibly better.
+        for (const Row *r : between) {
+            CHECK(r->outcome.crashes == 2);
+            CHECK(r->outcome.longRuns == 4);
+            CHECK(r->outcome.covered >= 700);
+        }
+        CHECK(between.front()->outcome.crashes < per.front()->outcome.crashes);
+        CHECK(between.front()->outcome.longRuns > per.front()->outcome.longRuns);
+        CHECK(between.front()->outcome.covered >= per.front()->outcome.covered + 100);
+    }
+
+    // rate x run length: the guidance profile is the same, only the run length
+    // changes how much coverage a run buys.
+    for (std::uint64_t seed : kSeeds) {
+        const ScaleRow *shortRun = nullptr;
+        const ScaleRow *longRun = nullptr;
+        for (const ScaleRow &r : scaling) {
+            if (r.seed != seed)
+                continue;
+            if (r.events == 100)
+                shortRun = &r;
+            else
+                longRun = &r;
+        }
+        CHECK(shortRun && longRun);
+        if (!shortRun || !longRun)
+            continue;
+        CHECK(shortRun->outcome.crashes == longRun->outcome.crashes);
+        CHECK(shortRun->outcome.longRuns == longRun->outcome.longRuns);
+        CHECK(longRun->outcome.covered > shortRun->outcome.covered * 3 / 2);
+    }
+
+    // The attract side of the plateau: no collapse at 50 % per suggestion.
+    CHECK(attract.size() == 2);
+    for (const Outcome &o : attract) {
+        CHECK(o.crashes == 3);
+        CHECK(o.longRuns == 3);
+        CHECK(o.covered >= 585);
+    }
+}
+
 }  // namespace
 
 int main()
@@ -391,6 +579,8 @@ int main()
         {"thePheromonesKeepTheCampaignOffACrashingShortcut",
          testThePheromonesKeepTheCampaignOffACrashingShortcut},
         {"evaporationBetweenRunsKeepsProgress", testEvaporationBetweenRunsKeepsProgress},  // DeepSeek V4.1 Flash
+        {"evaporationParametersSitOnAPlateau",
+         testEvaporationParametersSitOnAPlateau},  // DeepSeek V4.1 Flash
     };
     for (const auto &t : tests) {
         const int before = g_failures;

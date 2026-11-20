@@ -227,6 +227,12 @@ std::string transitionComment(const Net &net, const Transition &t)
         if (t.command->when != kNoPlace)
             out += ", when " + net.places[t.command->when].id;
     }
+    // DeepSeek V4.1 Flash: the rare hunting contract (doku section 30).
+    if (t.rare) {
+        out += ", rare p " + std::to_string(t.rare->p) + ", attempts " + std::to_string(t.rare->attempts);
+        if (t.rare->waitForMs > 0)
+            out += ", wait-for " + std::to_string(t.rare->waitForMs) + " ms";
+    }
     return out;
 }
 
@@ -275,6 +281,14 @@ JsonValue transitionJson(const Net &net, const Transition &t)
         if (t.command->when != kNoPlace)
             c.set("when", JsonValue::string(net.places[t.command->when].id));
         o.set("command", std::move(c));
+    }
+    // DeepSeek V4.1 Flash: the rare hunting contract (doku section 30).
+    if (t.rare) {
+        JsonValue r = JsonValue::object();
+        r.set("p", JsonValue::number(t.rare->p));
+        r.set("attempts", JsonValue::number(static_cast<double>(t.rare->attempts)));
+        r.set("wait-for", JsonValue::number(static_cast<double>(t.rare->waitForMs)));
+        o.set("rare", std::move(r));
     }
     return o;
 }

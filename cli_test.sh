@@ -43,7 +43,7 @@ hasnt() { ! grep -q -- "$1" "$TMP/out" || fail "output unexpectedly has \"$1\"";
 
 begin version
 # DeepSeek V4.1 Flash: the version follows the git branch (doku section 20).
-run 0 "$EGGEMBT" version && has "^eggembt v0[.]0[.]2$"
+run 0 "$EGGEMBT" version && has "^eggembt v0[.]0[.]4$"
 
 # GLM-5.3-Flash: the credits, byte for byte as Egge asked for them.
 begin credits
@@ -612,6 +612,43 @@ run 0 "$EGGEMBT" run "$TMP/sync.json" --simulate --quiescence 40 --sync-events -
     && has "coverage complete"
 grep -q '"sync_events":true' "$TMP/sync-report.json" || fail "the --json report lacks sync_events"
 grep -q '"sync_transitions":1' "$TMP/sync-report.json" || fail "the --json report lacks the sync transition count"
+
+begin rare
+# DeepSeek V4.1 Flash: rare transitions and the hunt (doku section 30). The
+# marker is a model property; --hunt-rare makes the campaign dwell at the
+# enabling state, spend its attempt and report both on the console and in JSON.
+cat >"$TMP/rare.json" <<'EOF'
+{"version":1,"name":"rare",
+ "places":[{"id":"s0"},{"id":"s1"}],
+ "transitions":[{"id":"go","kind":"controllable","label":"go"},
+                {"id":"rare_go","kind":"controllable","label":"rare.go",
+                 "rare":{"p":0.001,"attempts":2,"wait-for":30}},
+                {"id":"back","kind":"controllable","label":"back"}],
+ "arcs":[{"from":"s0","to":"go"},{"from":"go","to":"s1"},
+         {"from":"s0","to":"rare_go"},{"from":"rare_go","to":"s1"},
+         {"from":"s1","to":"back"},{"from":"back","to":"s0"}],
+ "markings":{"initial":[{"name":"start","tokens":{"s0":1}}],
+             "target":[{"name":"idle","tokens":{"s0":1}}]}}
+EOF
+run 0 "$EGGEMBT" help run && has "--hunt-rare"
+run 0 "$EGGEMBT" check "$TMP/rare.json" --no-explore \
+    && has "rare transitions: 1 (rare_go: p 0.001, 2 attempts, wait 30 ms)"
+run 0 "$EGGEMBT" run "$TMP/rare.json" --simulate --quiescence 40 --hunt-rare --no-color \
+    --json "$TMP/rare-report.json" \
+    && has "rare: 1 transition(s), 1 seen, 1 attempt(s) used; hunting (--hunt-rare)" \
+    && has "coverage complete"
+grep -q '"hunt_rare":true' "$TMP/rare-report.json" || fail "the --json report lacks hunt_rare"
+grep -q '"transition":"rare_go"' "$TMP/rare-report.json" || fail "the --json report lacks the rare transition"
+grep -q '"attempts_used":1' "$TMP/rare-report.json" || fail "the --json report lacks the rare attempt"
+grep -q '"seen":true' "$TMP/rare-report.json" || fail "the --json rare summary does not say seen"
+# Without the switch the marker is inert: the input is still sent as ordinary
+# coverage, but no dwell and no attempt.
+run 0 "$EGGEMBT" run "$TMP/rare.json" --simulate --quiescence 40 --no-color \
+    --json "$TMP/rare-off.json" \
+    && has "rare: 1 transition(s), 1 seen, 0 attempt(s) used; not hunted (add --hunt-rare)" \
+    && has "coverage complete"
+grep -q '"hunt_rare":false' "$TMP/rare-off.json" || fail "the --json report does not say hunting is off"
+grep -q '"attempts_used":0' "$TMP/rare-off.json" || fail "the inert marker still spent an attempt"
 
 begin inspection
 # DeepSeek V4.1 Flash: post-campaign inspection (doku section 21). The views read

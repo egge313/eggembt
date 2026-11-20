@@ -2557,6 +2557,153 @@ static void testTheWallClockBudgetEndsTheCampaign()
     CHECK(rep2.stopReason != "time budget reached");
 }
 
+// DeepSeek V4.1 Flash: the rare hunt (doku section 30). An enabled rare SUT
+// move is dwelt on for its wait-for -- deliberately silent -- and the idle
+// timeout must not mistake that silence for a hung SUT. Every dwell is one
+// attempt; after the model's three attempts the ordinary guidance takes over.
+static void testARareDwellSuspendsTheIdleTimeout()
+{
+    NetBuilder b("rare-dwell");
+    const auto s0 = b.place("s0");
+    const auto s1 = b.place("s1");
+    const auto blip = b.transition("blip", TransitionKind::Observable, "blip");
+    b.input(s0, blip).output(blip, s1);
+    b.rare(blip, RareSpec{0.01, 3, 120});
+    b.initial("start", {{s0, 1}});
+    const Net net = b.build();
+
+    FakeSutOptions opt;
+    opt.weight = {{"blip", 0}};  // the SUT never fires it: the dwells run dry
+    FakeSut sut(net, opt);
+
+    SessionConfig cfg = quick();
+    cfg.huntRare = true;
+    cfg.idleTimeout = std::chrono::milliseconds(50);
+    cfg.plugin.quiescenceTimeoutMs = 20;  // silence is reported inside each dwell
+    cfg.maxRuns = 1;
+    Session session(net, cfg);
+
+    const RunReport r = session.runOnce(sut);
+    // Three 120 ms dwells; the 50 ms idle timeout never fired during them (it
+    // does end the run afterwards, when ordinary guidance waits for the move).
+    CHECK(r.durationMs >= 300);
+    CHECK(session.coverage().rareAttempts(blip) == 3u);
+    CHECK(session.coverage().transitionHits(blip) == 0u);
+    CHECK(r.stimuli == 0);
+    CHECK(r.outcome == RunOutcome::Aborted);
+    CHECK(contains(r.detail, "no event from the SUT"));
+}
+
+// DeepSeek V4.1 Flash: a controllable rare input goes out only after its
+// wait-for; without --hunt-rare the marker is inert; a send without a dwell
+// (wait-for 0) still counts its attempt (doku section 30).
+static void testAControllableRareInputIsSentAfterItsDwell()
+{
+    const auto makeNet = [](std::uint32_t waitForMs) {
+        NetBuilder b("rare-send");
+        const auto s0 = b.place("s0");
+        const auto s1 = b.place("s1");
+        const auto go = b.transition("go", TransitionKind::Controllable, "go");
+        const auto back = b.transition("back", TransitionKind::Controllable, "back");
+        b.input(s0, go).output(go, s1);
+        b.input(s1, back).output(back, s0);
+        b.rare(go, RareSpec{0.01, 2, waitForMs});
+        b.initial("start", {{s0, 1}});
+        b.targetMarking("idle", {{s0, 1}});
+        return b.build();
+    };
+    {
+        const Net net = makeNet(100);
+        FakeSut sut(net);
+        SessionConfig cfg = quick();
+        cfg.huntRare = true;
+        cfg.maxRuns = 1;
+        Session session(net, cfg);
+        const RunReport r = session.runOnce(sut);
+        CHECK(r.outcome == RunOutcome::Completed);
+        CHECK(r.durationMs >= 90);  // the dwell really withheld the input
+        CHECK(session.coverage().rareAttempts(*net.findTransition("go")) == 1u);
+        CHECK(session.coverage().transitionHits(*net.findTransition("go")) > 0u);
+        const auto received = sut.stimuliReceived();
+        CHECK(received.size() == 2);
+        if (received.size() == 2) {
+            CHECK(received[0] == "go");
+            CHECK(received[1] == "back");
+        }
+    }
+    {   // without --hunt-rare the marker is inert: no dwell, no attempt
+        const Net net = makeNet(1000);
+        FakeSut sut(net);
+        SessionConfig cfg = quick();
+        cfg.maxRuns = 1;
+        Session session(net, cfg);
+        const RunReport r = session.runOnce(sut);
+        CHECK(r.outcome == RunOutcome::Completed);
+        CHECK(r.durationMs < 900);  // sent at once, not after the wait-for
+        CHECK(session.coverage().rareAttempts(*net.findTransition("go")) == 0u);
+        CHECK(session.coverage().transitionHits(*net.findTransition("go")) > 0u);
+    }
+    {   // wait-for 0: sent at once, but the send is still one attempt
+        const Net net = makeNet(0);
+        FakeSut sut(net);
+        SessionConfig cfg = quick();
+        cfg.huntRare = true;
+        cfg.maxRuns = 1;
+        Session session(net, cfg);
+        const RunReport r = session.runOnce(sut);
+        CHECK(r.outcome == RunOutcome::Completed);
+        CHECK(r.durationMs < 900);
+        CHECK(session.coverage().rareAttempts(*net.findTransition("go")) == 1u);
+    }
+}
+
+// DeepSeek V4.1 Flash: coverage completeness defers to an unseen rare
+// transition with attempts left (doku section 30). The transition is enabled
+// only in a place that never holds a token, so the campaign can never see it;
+// the run limit stays a hard limit and says what cut the hunt short.
+static void testARareHuntKeepsTheCampaignAlivePastCoverage()
+{
+    const auto makeNet = [] {
+        NetBuilder b("rare-unreachable");
+        const auto s0 = b.place("s0");
+        const auto s1 = b.place("s1");
+        const auto island = b.place("island");
+        const auto go = b.transition("go", TransitionKind::Controllable, "go");
+        const auto back = b.transition("back", TransitionKind::Observable, "back");
+        const auto blip = b.transition("blip", TransitionKind::Observable, "blip");
+        b.input(s0, go).output(go, s1);
+        b.input(s1, back).output(back, s0);
+        b.input(island, blip).output(blip, s1);
+        b.rare(blip, RareSpec{0.01, 4, 0});
+        b.initial("start", {{s0, 1}});
+        b.targetMarking("idle", {{s0, 1}});
+        return b.build();
+    };
+    {   // without the hunt the campaign is complete after the ordinary edges
+        const Net net = makeNet();
+        FakeSut sut(net);
+        SessionConfig cfg = quick();
+        cfg.maxRuns = 3;
+        Session session(net, cfg);
+        const CampaignReport rep = session.runCampaign(sut);
+        CHECK(rep.complete && rep.stopReason == "coverage complete");
+        CHECK(rep.runs.size() == 1);
+    }
+    {   // with the hunt the unseen rare transition keeps it alive
+        const Net net = makeNet();
+        FakeSut sut(net);
+        SessionConfig cfg = quick();
+        cfg.huntRare = true;
+        cfg.maxRuns = 3;
+        Session session(net, cfg);
+        const CampaignReport rep = session.runCampaign(sut);
+        CHECK(!rep.complete);
+        CHECK(rep.runs.size() == 3);
+        CHECK(rep.stopReason == "run limit reached; rare transitions still unseen");
+        CHECK(session.rareHuntPending());
+    }
+}
+
 static void testAPluginThatCannotAckIsNoted()
 {
     const Net net = makeSyncNet();
@@ -2642,6 +2789,9 @@ int main()
         {"aPluginThatCannotAckIsNoted", testAPluginThatCannotAckIsNoted},  // DeepSeek V4.1 Flash
         {"theTestingStrategyLandsInTheWeights", testStrategyProfiles},  // DeepSeek V4.1 Flash
         {"theWallClockBudgetEndsTheCampaign", testTheWallClockBudgetEndsTheCampaign},  // DeepSeek V4.1 Flash
+        {"aRareDwellSuspendsTheIdleTimeout", testARareDwellSuspendsTheIdleTimeout},  // DeepSeek V4.1 Flash
+        {"aControllableRareInputIsSentAfterItsDwell", testAControllableRareInputIsSentAfterItsDwell},  // DeepSeek V4.1 Flash
+        {"aRareHuntKeepsTheCampaignAlivePastCoverage", testARareHuntKeepsTheCampaignAlivePastCoverage},  // DeepSeek V4.1 Flash
     };
     for (const auto &t : tests) {
         const int before = g_failures;

@@ -734,7 +734,7 @@ demo's two logs: campaigns 93 / 80 / 80 %, within-campaign 49 / 8 / 6 and
 a coverage measure, not the overlap coefficient `|A ∩ B| / min(|A|, |B|)`, and
 not frequency- or order-aware; the console rounds, `--csv`/`--json` are exact.
 
-### DeepSeek V4.1 Flash — v0.0.2: PNML export, a testing strategy, a budget, evaporation at the run boundary, and an optional phase veto
+### DeepSeek V4.1 Flash — v0.0.2: PNML export, a testing strategy, a budget, and evaporation at the run boundary
 
 **PNML export** (`eggembt export MODEL [--output FILE] [--strict]`; user
 manual §8.6, `doku.md` §27). The model is written as standard PNML
@@ -761,18 +761,6 @@ frontier states 1. `seek` sets the suggester's risk/hazard weights to 1/10;
 `avoid` to 5/40. The halves are independent. `check`, the campaign's
 `Guidance` block and the campaign JSON name the effective values. The
 complete JSON remains the authority for what the model says.
-
-**The phase veto is optional.** `--satisfied-target-policy
-veto|penalise|ignore` (user manual §8.5, `doku.md` §28). The default, `veto`,
-keeps the historical rule: the suggester never chooses a move into a
-satisfied target and plans route around it. `penalise` allows the move and
-the plan but keeps the hazard fraction in the score; `ignore` treats a
-satisfied target as an ordinary state. The `Seeking -> Satisfied` transition,
-the outcomes (`error_reached`, `deadlock`) and the intentional-target ending
-are unchanged — the switch only says whether the suggester may choose the
-move. It is useful when a satisfied error marking blocks the only corridor
-to behaviour that is still uncovered, and the relaxation is off by default
-because the price is paid in whole runs.
 
 **Wall-clock budget.** `--budget DURATION` (bare seconds, or `ms/s/m/h`;
 positive, at most 30 days) bounds the whole campaign, not each run. The
@@ -811,8 +799,83 @@ the `--tsuffix` switch, the user manual and `docs/`. Historical changelog
 entries (this file, `doku.md` §§16, 21, 25) keep the word as it was written
 then, and Egge's own quoted text keeps it with a note. No behaviour changed.
 
-The suite stands at **18 CTest entries** — 17 unit suites (290 tests;
+The suite stands at **18 CTest entries** — 17 unit suites (288 tests;
 `tst_pnml` 24, `tst_jsonnetloader` 43, `tst_session` 55, `tst_ants` 23,
-`tst_pheromone` 2, `tst_suggest` 20) plus `cli_test.sh` (40 scenarios,
-+`export`, +`strategy`, +`budget`, +`evaporation-between-runs`,
-+`satisfied-target-policy`) — all green.
+`tst_pheromone` 2) plus `cli_test.sh` (39 scenarios, +`export`, +`strategy`,
++`budget`, +`evaporation-between-runs`) — all green.
+
+### DeepSeek V4.1 Flash — v0.0.3: the satisfied-target phase policy
+
+`--satisfied-target-policy veto|penalise|ignore` (user manual §8.5,
+`doku.md` §28). Every target is `seeking` while it is still a goal and
+`satisfied` once its policy count is reached; its states are then forbidden.
+The default, `veto`, keeps the historical rule: the suggester never chooses
+a move into a satisfied target and plans route around it. `penalise` allows
+the move and the plan but keeps the hazard fraction in the score; `ignore`
+treats a satisfied target as an ordinary state. The `Seeking -> Satisfied`
+transition, the outcomes (`error_reached`, `deadlock`) and the
+intentional-target ending are unchanged — the switch only says whether the
+suggester may choose the move. It is useful when a satisfied error marking
+blocks the only corridor to behaviour that is still uncovered, and the
+relaxation is off by default because the price is paid in whole runs.
+
+The console `Guidance` block prints `satisfied targets: <policy>` and the
+campaign JSON always carries `satisfied_target_policy`. The suite stands at
+**18 CTest entries** — 17 unit suites (290 tests; `tst_pnml` 24,
+`tst_jsonnetloader` 43, `tst_session` 55, `tst_ants` 23, `tst_pheromone` 2,
+`tst_suggest` 20) plus `cli_test.sh` (40 scenarios, +`export`, +`strategy`,
++`budget`, +`evaporation-between-runs`, +`satisfied-target-policy`) — all
+green. `eggembt version` prints `v0.0.3`.
+
+### DeepSeek V4.1 Flash — v0.0.4: rare transitions and the hunt
+
+Some SUT moves happen only rarely. A transition can now say so:
+
+```json
+{"id": "glitch", "kind": "observable", "label": "glitch",
+ "rare": {"p": 0.001, "attempts": 100, "wait-for": 60000}}
+```
+
+`"rare": true` takes the defaults (`p` 0.001, `attempts` 100, `wait-for` 0);
+`"rare": false` is no marker; an object may set any subset. `p` is
+descriptive only — the tool cannot verify the SUT's real odds — while
+`attempts` is the campaign's budget and `wait-for` the dwell at the enabling
+state. The transition must be visible, so an untraced internal step cannot
+be rare. `check` prints the markers and their contracts.
+
+`--hunt-rare` (default off) makes an unseen rare transition a goal above
+every other goal: targets, fresh transitions, edges and the frontier. The
+enabling state is the goal, because the tester cannot take a move of the SUT
+itself. An enabled rare move is given its `wait-for` as a deliberate dwell;
+any real event ends the dwell early and a withheld controllable input is
+dropped when the state moves on. The idle timeout is suspended during the
+dwell, but the wall-clock budget and a stop request still apply. Every dwell
+is one attempt, even within one run; a controllable rare input sent without
+a dwell is one attempt too. The counts are campaign-scoped and are not
+written to the run log.
+
+Rare goals outrank coverage, so the campaign does not declare itself
+complete while one is unseen with attempts left. The hard limits
+(`--max-runs`, `--max-events`, `--max-states`, `--budget`) still hold, and a
+campaign cut short says `run limit reached; rare transitions still unseen`
+or `time budget reached; rare transitions still unseen`. When the attempt
+budget is spent and the transition is still unseen, the hunt gives up and
+the campaign may complete normally.
+
+The console `Guidance` block prints `rare: N transition(s), S seen, A
+attempt(s) used; hunting (--hunt-rare)` (or `not hunted`), and the campaign
+JSON always carries `hunt_rare` and `rare_transitions` with `transition`,
+`label`, `p`, `attempts`, `wait_for_ms`, `seen` and `attempts_used`. The
+PNML export keeps the contract in the transition comment and annotation.
+
+The third pheromone benchmark now sweeps the evaporation rates (`doku.md`
+§31): the per-suggestion repel rate from 0.005 to 0.10 gives the same
+outcome on the 1000-state diamond (3 crashes, 3 productive runs, about 586
+edges), because the fork is reached about five suggestions after the
+deposit. The test pins that plateau instead of manufacturing a cliff, and
+the between-runs contrast (2 crashes, 4 productive runs, 777 edges) remains.
+
+The suite stands at **18 CTest entries** — 17 unit suites (297 tests;
+`tst_pnml` 24, `tst_jsonnetloader` 45, `tst_session` 58, `tst_suggest` 21,
+`tst_ants` 23, `tst_pheromone` 3) plus `cli_test.sh` (41 scenarios,
++`rare`) — all green. `eggembt version` prints `v0.0.4`.

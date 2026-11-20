@@ -400,6 +400,12 @@ static void printCommandHelp(std::ostream &out, const std::string &command)
             << "                          to the suggester (default veto = never plan into one;\n"
             << "                          penalise = allow it but keep the hazard; ignore = treat\n"
             << "                          it as an ordinary state)\n"
+            // DeepSeek V4.1 Flash: the rare hunt (doku section 30).
+            << "    --hunt-rare           hunt transitions the model marks \"rare\": they outrank\n"
+            << "                          every other goal, an enabled rare move of the SUT is\n"
+            << "                          given its \"wait-for\" as a dwell, and the campaign does\n"
+            << "                          not call itself complete while one is unseen with\n"
+            << "                          attempts left (the run/event/state limits still hold)\n"
             << "    --dump-on-deviation M   none | snapshot | crash (default none)  (also --dump-on-deadlock, --dump-on-livelock)\n"
             // GLM-5.3-Flash: the crash-prediction experiment's knobs (doku section 17).
             << "    --crash-level L       credibility level for \"certain deterministic\" crash\n"
@@ -510,6 +516,25 @@ int cmdCheck(const std::vector<std::string> &argv, std::ostream &out, std::ostre
     }
     // DeepSeek V4.1 Flash: the model's testing advice (doku section 27).
     out << "  strategy: goals " << toString(net->strategy.goals) << ", errors " << toString(net->strategy.errors) << "\n";
+
+    // DeepSeek V4.1 Flash: the rare transitions and their hunting contract
+    // (doku section 30). Silent when the model declares none.
+    std::size_t rareCount = 0;
+    for (const Transition &t : net->transitions)
+        if (t.rare)
+            ++rareCount;
+    if (rareCount > 0) {
+        out << "  rare transitions: " << rareCount << " (";
+        bool first = true;
+        for (const Transition &t : net->transitions) {
+            if (!t.rare)
+                continue;
+            out << (first ? "" : ", ") << t.id << ": p " << t.rare->p << ", " << t.rare->attempts
+                << " attempts, wait " << t.rare->waitForMs << " ms";
+            first = false;
+        }
+        out << ")\n";
+    }
 
     if (!args.has("no-explore")) {
         SessionConfig cfg;
@@ -1184,7 +1209,7 @@ int cmdRun(const std::vector<std::string> &argv, std::ostream &stdoutStream, std
     addSimSpec(spec);
     spec.flags.insert({"simulate", "stdio", "no-ants", "no-analyze", "require-complete", "strict",
                        "flat-catastrophe", "sync-events", "coverage-elements",
-                       "evaporate-between-runs"});  // DeepSeek V4.1 Flash
+                       "evaporate-between-runs", "hunt-rare"});  // DeepSeek V4.1 Flash
     spec.valued.insert({"agent", "connect", "listen", "accept-timeout", "hello-timeout", "max-runs", "max-events",
                         "quiescence", "livelock-timeout", "livelock-min-events", "idle-timeout", "ack-timeout", "poll",
                         "threshold", "initial", "seed", "ant-seed", "max-states", "deadlock-policy", "livelock-policy",
@@ -1288,6 +1313,8 @@ int cmdRun(const std::vector<std::string> &argv, std::ostream &stdoutStream, std
     // DeepSeek V4.1 Flash: evaporate the pheromone at run boundaries instead
     // of at every suggestion (doku section 27).
     cfg.evaporateBetweenRuns = args.has("evaporate-between-runs");
+    // DeepSeek V4.1 Flash: hunt the model's rare transitions (doku section 30).
+    cfg.huntRare = args.has("hunt-rare");
 
     // DeepSeek V4.1 Flash: the testing strategy (doku section 27). Unset means
     // the model's own "strategy" block, or Balanced when it has none.
@@ -1541,6 +1568,28 @@ int cmdRun(const std::vector<std::string> &argv, std::ostream &stdoutStream, std
     log.out << "  evaporation: "
             << (sessionCfg.evaporateBetweenRuns ? "between runs (--evaporate-between-runs)" : "per suggestion")
             << "\n";
+
+    // DeepSeek V4.1 Flash: the rare hunt (doku section 30): how many of the
+    // model's rare transitions the campaign has seen, how many attempts the
+    // dwells have used, and whether hunting is on. Silent when the model
+    // declares none, like the command and sync lines below.
+    std::size_t rareCount = 0;
+    std::size_t rareSeen = 0;
+    std::uint64_t rareUsed = 0;
+    for (std::size_t t = 0; t < net.transitions.size(); ++t) {
+        const Transition &tr = net.transitions[t];
+        if (!tr.rare)
+            continue;
+        ++rareCount;
+        const auto ti = static_cast<TransitionIndex>(t);
+        if (session.coverage().transitionHits(ti) > 0)
+            ++rareSeen;
+        rareUsed += session.coverage().rareAttempts(ti);
+    }
+    if (rareCount > 0)
+        log.out << "  rare: " << rareCount << " transition(s), " << rareSeen << " seen, " << rareUsed
+                << " attempt(s) used; "
+                << (sessionCfg.huntRare ? "hunting (--hunt-rare)" : "not hunted (add --hunt-rare)") << "\n";
 
     // GLM-5.3-Flash: the command hooks of the model and their bound, so the
     // feature is visible next to the other switches. Nothing when the model

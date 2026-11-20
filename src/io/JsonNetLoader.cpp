@@ -241,6 +241,52 @@ void parseCrashPrediction(const JsonValue &v, const std::string &path, Diag &d,
     out = cp;
 }
 
+// DeepSeek V4.1 Flash: the value of a transition's "rare" key:
+//   true                       the documented defaults (p 0.001, 100 attempts,
+//                              no dwell)
+//   {"p", "attempts", "wait-for"}
+//                              an explicit hunting contract; omitted fields take
+//                              the same defaults
+//   false                      no marker (the transition is ordinary)
+// The probability must lie strictly between 0 and 1 for the same reason as a
+// crash prediction's: the engine cannot verify the SUT's real odds, and "never"
+// or "always" would not describe a rare transition. "wait-for" is a dwell at
+// the enabling state in milliseconds, 0 = no dwell. The visibility rule (an
+// untraced internal step is never seen, so it cannot be hunted) is checked by
+// the caller, mirroring "error", "milestone" and "crash".
+void parseRareSpec(const JsonValue &v, const std::string &path, Diag &d, std::optional<RareSpec> &out)
+{
+    if (v.isBool()) {
+        if (v.asBool())
+            out = RareSpec{};
+        return;
+    }
+    if (!v.isObject()) {
+        d.error(path, "must be true or an object with \"p\", \"attempts\" and \"wait-for\"");
+        return;
+    }
+
+    RareSpec spec;
+    warnUnknownKeys(v, {"p", "attempts", "wait-for"}, path, d);
+    if (const JsonValue *pv = v.find("p")) {
+        if (!pv->isNumber() || !(pv->asNumber() > 0.0 && pv->asNumber() < 1.0))
+            d.error(sub(path, "p"), "must lie strictly between 0 and 1");
+        else
+            spec.p = pv->asNumber();
+    }
+    if (const JsonValue *av = v.find("attempts")) {
+        std::uint32_t n = 0;
+        if (getUInt(*av, sub(path, "attempts"), d, 1, n))
+            spec.attempts = n;
+    }
+    if (const JsonValue *wv = v.find("wait-for")) {
+        std::uint32_t n = 0;
+        if (getUInt(*wv, sub(path, "wait-for"), d, 0, n))
+            spec.waitForMs = n;
+    }
+    out = spec;
+}
+
 // GLM-5.3-Flash: the value of a transition's "command" key (Egge: "Run a
 // shell command synchronously or asynchronously when a transition fires."),
 // one of:
@@ -387,6 +433,7 @@ void parseTransitions(const JsonValue &root, Net &net, Diag &d)
                             "milestone", "crash",  // GLM-5.3-Flash: "crash"
                             "command",  // GLM-5.3-Flash: shell command hook
                             "sync",     // DeepSeek V4.1 Flash: synchronized event
+                            "rare",     // DeepSeek V4.1 Flash: the rare hunt
                             "policy", "target_hits"},
                         p, d);
 
@@ -599,6 +646,24 @@ void parseTransitions(const JsonValue &root, Net &net, Diag &d)
                             "and \"traced\": true (or make it observable)");
                 else
                     t.synchronized = true;
+            }
+        }
+
+        // DeepSeek V4.1 Flash: "rare" marks a transition that fires only with
+        // a very low probability, with its own hunting budget and dwell time
+        // (doku section 30). Same visibility rule as "error", "milestone" and
+        // "crash": an untraced internal step is never seen, so a hunt could
+        // never tell whether it fired.
+        if (const JsonValue *rv = o.find("rare")) {
+            std::optional<RareSpec> spec;
+            parseRareSpec(*rv, sub(p, "rare"), d, spec);
+            if (spec) {
+                if (!t.traced)
+                    d.error(sub(p, "rare"),
+                            "a rare transition must be visible to the tester: give it a label "
+                            "and \"traced\": true (or make it controllable/observable)");
+                else
+                    t.rare = spec;
             }
         }
 

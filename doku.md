@@ -1912,3 +1912,290 @@ unit suites, 290 unit tests — plus `cli_test.sh` (40 scenarios)**, all green:
 manual documents the option in §6.2, §8.3, §8.5, §10.1, §10.2, §11 and
 §12.8; `README.md` and `INSTALL.md` carry the updated counts and the new
 scenario.
+
+## 29. Update: 19 November 2026 (DeepSeek V4.1 Flash)
+
+### The version
+
+Egge committed the batch as `c1e389c` on branch `v0.0.3` and named the new
+version v0.0.3. The satisfied-target phase policy of §28 is that version.
+`src/Version.h` (and therefore `eggembt version` and the usage header), the
+`version` scenario in `cli_test.sh`, the `INSTALL.md` sample and the
+`README.md` changelog now say v0.0.3; the v0.0.2 changelog entry keeps its own
+feature list and its historical test counts. No behaviour changed.
+
+## 30. Update: 19 November 2026 (DeepSeek V4.1 Flash)
+
+### The request
+
+Egge: "It is possible that there are transitions, which fire with a very low
+probability. It should be possible to mark them as such, and it would be a
+good idea to have an option to hunt them down even if this meant that the
+rest of the RG exceeds permissible coverage."
+
+Two things are asked for, and they are separate on purpose. Marking is a
+property of the model: this move is rare. Hunting is a decision about one
+campaign: spend it on that move. A model may carry the markers and a campaign
+may ignore them; adding a marker then changes no behaviour at all.
+
+### The model key
+
+A transition carries `"rare"` in one of three forms:
+
+```json
+{"id": "glitch", "kind": "observable", "label": "glitch", "rare": true}
+{"id": "coin", "kind": "controllable", "label": "coin",
+ "rare": {"p": 0.001, "attempts": 100, "wait-for": 60000}}
+{"id": "noise", "kind": "observable", "label": "noise", "rare": false}
+```
+
+- `true` takes the documented defaults: `p` 0.001, `attempts` 100,
+  `wait-for` 0 (no dwell).
+- An object may set any subset of `p`, `attempts` and `wait-for`; the rest
+  keep the defaults. `"rare": false` is the same as leaving the key out.
+- `p` must lie strictly between 0 and 1, `attempts` must be an integer of at
+  least 1, `wait-for` an integer of at least 0 milliseconds. Unknown keys
+  inside the object are warned about like every other object in the loader.
+- The transition must be **visible** to the tester: an observable, or a
+  traced internal transition with a label. An untraced internal step is
+  rejected at load time (`$.transitions[i].rare`), for the same reason the
+  error and milestone tags are: the tester would never see the step, so it
+  could never tell whether the hunt succeeded. A controllable transition is
+  visible by definition.
+- `p` is **descriptive only**. The engine cannot verify the SUT's real odds,
+  so it is reported in `check`, in the console and in the JSON but never
+  used for scheduling. The hunt is driven by the attempt budget, not by a
+  probability calculation.
+
+`Net::Transition` carries an `std::optional<RareSpec>`; `NetBuilder::rare()`
+sets it for the tests and the simulator. The PNML export writes the contract
+into the transition comment (`rare p ..., attempts ..., wait-for ... ms`)
+and into the annotation block (`"rare": {"p", "attempts", "wait-for"}`), so
+an exported model keeps it for a reader even though a PNML import does not.
+
+### The hunt: `--hunt-rare`
+
+The campaign switch is off by default. With it on, every unseen rare
+transition whose attempt budget is not spent is a goal of the new, highest
+`GoalTier::Rare`:
+
+- A rare goal outranks targets, fresh transitions, fresh edges and the
+  frontier. In the backward Dijkstra and in the candidate evaluation a rare
+  goal also wins an **equal-cost tie** against every other tier; without
+  that tie-break a fresh uncovered edge on the last step would keep its own
+  tier and the hunt would lose the choice it was supposed to make. The
+  historical tiers keep their mutual order.
+- The **enabling state** is the goal, not the edge. For a move of the SUT
+  the tester cannot take the edge; being in the state where the move is
+  enabled is what gives it a chance. For a controllable rare transition the
+  ordinary candidate path applies — the input is chosen and sent — but only
+  after the dwell described below.
+- "Seen" means definite transition coverage (`transitionHits > 0`), the same
+  rule the rest of the tool uses. An ambiguous "may have happened" does not
+  end the hunt.
+
+### The dwell, and the attempt budget
+
+`wait-for` is a **dwell at the enabling state**, not a fixed delay before
+some later input. When the suggester says `Dwell` (a rare move of the SUT is
+enabled in the belief) or when it chooses a controllable rare input with a
+non-zero `wait-for`, the session:
+
+1. notes one rare attempt in `CoverageDb`, even if the same run has already
+   dwelt on the same transition;
+2. suspends the idle timeout for the duration and tells the belief tracker
+   that silence is expected, so the SUT's `Quiescent` report is not treated
+   as progress and the deliberate pause is not treated as a hung SUT;
+3. waits until the deadline; any real event — `Observed` or `Died` — ends the
+   dwell early because the state moved on, and the script is re-planned. A
+   withheld controllable input is dropped in that case: it no longer belongs
+   to the state it was planned for;
+4. at the deadline, sends the withheld controllable input if there is one,
+   or simply asks for the next suggestion.
+
+A `Quiescent` report is not an event and is ignored by the dwell logic.
+Stopping the campaign and the wall-clock budget are still checked at every
+loop turn, so they cut a dwell short like any other wait.
+
+Every dwell is one attempt, even several dwells inside one run. A
+controllable rare input sent **without** a dwell (`wait-for` 0) counts its
+attempt when it is sent. The attempt counts are campaign-scoped state in
+`CoverageDb`; they are not written to the run log, so a campaign continued
+from a log starts its attempt budget fresh while `transitionHits` is rebuilt
+from the recorded runs. A transition already seen there is therefore not a
+goal again.
+
+With `wait-for: 0` a rare move of the SUT produces `Wait`, not `Dwell`: the
+campaign still stays put and listens instead of moving away, but there is no
+timed silence to suspend the idle timeout for and no dwell to charge an
+attempt. That form is bounded by the idle timeout and the run limits, not by
+the attempt budget.
+
+### Completeness and the hard limits
+
+Rare transitions outrank coverage, so an otherwise complete campaign does
+not declare itself complete while `rareHuntPending()` is true — a rare
+transition is still unseen and still has attempts left. `--max-runs`,
+`--max-events`, `--max-states` and `--budget` remain hard limits; a campaign
+cut short by one of them says so:
+
+    run limit reached; rare transitions still unseen
+    time budget reached; rare transitions still unseen
+
+Once the attempt budget is spent and the transition is still unseen, it is
+no longer pending: the hunt has given up as the model allowed, and the
+campaign can end normally with `coverage complete`. `--require-complete`
+judges the campaign as incomplete while a rare transition is still pending,
+which is the intended reading of the switch.
+
+### Reporting
+
+`check` names the markers and their contracts:
+
+    rare transitions: 1 (rare_go: p 0.001, 2 attempts, wait 30 ms)
+
+The console `Guidance` block adds one line when the model declares any:
+
+    rare: 1 transition(s), 1 seen, 1 attempt(s) used; hunting (--hunt-rare)
+    rare: 1 transition(s), 1 seen, 0 attempt(s) used; not hunted (add --hunt-rare)
+
+The campaign JSON always carries both keys, whether or not the model declares
+a rare transition and whether or not the hunt is on: `hunt_rare` (boolean)
+and `rare_transitions` (array, possibly empty), each entry
+`{transition, label?, p, attempts, wait_for_ms, seen, attempts_used}`.
+
+### The tests
+
+New and changed tests for this batch:
+
+- `tst_jsonnetloader` (45, +2): `rareKeyFormsAreParsed` pins `true`, an
+  object, `false` and the defaults; `rareKeyIsValidatedAndNeedsVisibility`
+  pins the visibility rule and every range error.
+- `tst_suggest` (21, +1): `rareHuntGoalsAndBudgets` pins the priority flip
+  against a nearer fresh edge, the `Dwell` and `Wait` forms, the attempt
+  budget ending the hunt, and the controllable input's `dwell` delay.
+- `tst_session` (58, +3): `aRareDwellSuspendsTheIdleTimeout` (three 120 ms
+  dwells under a 50 ms idle timeout, then the ordinary aborted run),
+  `aControllableRareInputIsSentAfterItsDwell` (the send is delayed, the
+  attempt is counted, the marker is inert without the switch, and
+  `wait-for` 0 still counts one attempt), and
+  `aRareHuntKeepsTheCampaignAlivePastCoverage` (the unseen rare transition
+  defers completeness and the run limit is the hard stop).
+- `tst_pnml` (24): the export test now also checks the rare comment and
+  annotation.
+- `cli_test.sh` (41): the `rare` scenario runs a marker end to end with and
+  without `--hunt-rare`, checking the console lines, `hunt_rare`,
+  `rare_transitions`, `seen` and `attempts_used`.
+
+The suite stands at 18 CTest entries, 297 unit tests and 41 CLI scenarios.
+
+### The limits of the hunt
+
+- **The markers are a promise, not a measurement.** `p` does not steer
+  anything; a model that marks a common move as rare spends attempts on it
+  at the cost of coverage. Mark only what is worth that price.
+- **An attempt is a dwell, not a trigger.** The budget bounds how often the
+  campaign waits, not how often the SUT fires. A hundred dwells of 60 s are
+  a hundred minutes of deliberate silence, and every one of them is a
+  suggestion not spent on fresh coverage.
+- **An unreachable rare transition keeps the campaign alive.** If its
+  enabling place never holds a token in the explored graph, no dwell is
+  possible and no attempt can be spent, but it stays pending — the campaign
+  runs to a hard limit. The stop reason names the rare hunt, so the cause is
+  visible rather than silent.
+- **The idle timeout cannot watch during a dwell.** A SUT that hangs inside
+  a dwell is noticed only when the dwell ends; the budget and a stop request
+  still apply. This is the price of asking the SUT to be left alone.
+- **Attempt budgets do not survive a log.** A continued campaign starts the
+  budget fresh (the hits do survive), so a rare transition can be hunted
+  again after every restart of the tool.
+- **The hunt is not a probability oracle.** A rare move that the SUT makes
+  only under conditions the model does not describe cannot be hunted by
+  waiting at a state the model believes in; that remains a modelling
+  problem, exactly like the indistinguishable-target limit of §27.
+
+## 31. Update: 19 November 2026 (DeepSeek V4.1 Flash)
+
+### The question
+
+§27 measured the two endpoints — 2 % per suggestion versus 2 % at the run
+boundary — and found a real difference. It did not answer whether the
+default sits on a plateau or near a cliff, nor whether the outcome follows
+the nominal retention `(1 - r)^n`. Egge asked for the sweep, and the answer
+turned out to be a plateau wide enough to pin.
+
+### The measurement
+
+The benchmark is the existing 1000-region-state diamond of §27: 1008 states,
+2010 edges, graph seed 7, six runs of 200 events, the (marking, T-suffix)
+pair layer at length 4. The swept parameter is the per-suggestion repel
+evaporation (the attract stays at 10 % unless stated); seeds 1 and 2 are
+both measured. The decision variable is the one that matters: how many of
+the six runs crash on the shortcut, how many stay productive, and how many
+edges the campaign covered.
+
+    per suggestion      crashes  long runs  covered (seed 1 / seed 2)
+      rate 0.005          3         3        586 / 586
+      rate 0.010          3         3        586 / 586
+      rate 0.020          3         3        586 / 585
+      rate 0.050          3         3        586 / 586
+      rate 0.100          3         3        586 / 586
+    between runs
+      rate 0.020          2         4        777 / 777
+      rate 0.100          2         4        777 / 777
+    same loss per run
+      (0.04, 100 events)  3         3        286 / 286
+      (0.02, 200 events)  3         3        586 / 585
+    attract side
+      attract 0.50        3         3        586 / 586
+
+The nominal retention over a 200-event run falls from 37 % at 0.005 to
+0.02^200 ≈ 0 at 0.10 — the parameter does change the arithmetic — and yet
+the outcome does not move. The between-runs option remains visibly better
+(2 crashes, 4 productive runs, 777 edges), and the same rate × run length
+gives the same guidance profile: halving the run and doubling the rate
+changes only how much coverage a shorter run can buy (286 versus 586).
+
+### Why the plateau is flat
+
+The fork is reached about **five suggestions after a run starts**, and the
+catastrophe lesson is deposited at the end of the previous run. So only
+that short interval has to be survived, not the whole 200-suggestion run:
+`0.98^5 ≈ 90 %` of the lesson is still there at the decision, and even
+`0.90^5 ≈ 59 %` at the top of the sweep is enough. Two independent
+protections carry the rest:
+
+- the (marking, T-suffix) **pair repel** keeps the lesson on the exact route
+  that crashed, and it ages no faster than the edge channel; and
+- the **safe route around the crash** keeps its attract, so even a weakened
+  repel does not make the shortcut attractive by default.
+
+The plateau is therefore a property of the benchmark's timing, not a claim
+that evaporation never matters. A cliff would need a much longer interval
+between the deposit and the fork — a deeper entry into the region — or a
+much weaker deposit; manufacturing one would say more about the test than
+about the tool. The test asserts what was measured.
+
+### The test
+
+`tst_pheromone`'s third test was renamed from the planned cliff hunt to
+`evaporationParametersSitOnAPlateau`. It prints the whole table and asserts:
+
+- every per-suggestion rate from 0.005 to 0.10 lands on the same crash and
+  long-run counts as the 0.005 endpoint, with coverage within the one-edge
+  tie-break wobble; the endpoint itself is 3 crashes and 3 productive runs;
+- the longest per-suggestion run really used at least 100 suggestions, so
+  the flat result is not an artefact of short runs;
+- between-runs aging at 0.02 and 0.10 gives 2 crashes, 4 productive runs and
+  at least 700 covered edges, and is better than per-suggestion aging on all
+  three counts;
+- the scaling pair (0.04, 100 events) and (0.02, 200 events) has the same
+  crash and long-run counts, with the longer run covering more than 1.5 ×
+  the shorter; and
+- the attract side at 50 % per suggestion does not collapse: still 3
+  crashes, 3 productive runs and at least 585 edges.
+
+The interpretation for a user is in the user manual (§7.4 and §12.3): the
+default is safe on this shape, the run boundary is the stronger lever, and
+the parameter should be moved only for a model whose fork is much deeper
+into the run than this benchmark's.

@@ -19,6 +19,8 @@ constexpr std::uint32_t kInf = std::numeric_limits<std::uint32_t>::max();
 std::string goalText(GoalTier t)
 {
     switch (t) {
+    case GoalTier::Rare:
+        return "a rare transition that has not been seen yet";
     case GoalTier::Target:
         return "a target (error marking, deadlock or livelock) that is still being sought";
     case GoalTier::NewTransition:
@@ -48,6 +50,7 @@ void Suggester::setLivelockFindings(const std::vector<LivelockFinding> &findings
 std::uint32_t Suggester::penalty(GoalTier tier) const
 {
     switch (tier) {
+    case GoalTier::Rare:          return cfg_.penaltyRare;
     case GoalTier::Target:        return cfg_.penaltyTarget;
     case GoalTier::NewTransition: return cfg_.penaltyNewTransition;
     case GoalTier::Edge:          return cfg_.penaltyEdge;
@@ -55,6 +58,17 @@ std::uint32_t Suggester::penalty(GoalTier tier) const
     case GoalTier::None:          break;
     }
     return 0;
+}
+
+// DeepSeek V4.1 Flash: the hunt's goal (doku section 30). "Seen" is the
+// ordinary definite transition coverage; a still-possible but ambiguous step
+// does not count. The attempt budget belongs to the campaign, not the run.
+bool Suggester::rareGoal(TransitionIndex t) const
+{
+    if (t >= rg_.net().transitions.size())
+        return false;
+    const Transition &tr = rg_.net().transitions[t];
+    return tr.rare && db_.transitionHits(t) == 0 && db_.rareAttempts(t) < tr.rare->attempts;
 }
 
 Suggestion Suggester::suggest(const BeliefTracker &tracker)
@@ -147,6 +161,45 @@ Suggestion Suggester::suggest(const BeliefTracker &tracker)
     const bool vetoSatisfied = cfg_.satisfiedTargets == SatisfiedTargetPolicy::Veto;
     const bool hazardSatisfied = cfg_.satisfiedTargets != SatisfiedTargetPolicy::Ignore;
 
+    // DeepSeek V4.1 Flash: a rare transition that is enabled right here is the
+    // strongest goal there is (doku section 30). The SUT's own move cannot be
+    // sent, so dwell at the enabling state for its wait-for and give it a real
+    // chance to fire; any real event ends the dwell (the session's rule). With
+    // wait-for 0 the campaign still stays put and listens instead of moving
+    // away from the rare chance. A controllable rare input is handled by the
+    // ordinary candidate path below: it is simply sent after the dwell.
+    if (cfg_.huntRare) {
+        for (TransitionIndex t = 0; t < net.transitions.size(); ++t) {
+            const Transition &tr = net.transitions[t];
+            if (!rareGoal(t) || tr.kind == TransitionKind::Controllable)
+                continue;
+            bool enabledSomewhere = false;
+            for (StateId s : belief) {
+                if (isEnabled(tr, rg_.tokens(s))
+                    && (!vetoSatisfied || !board_.forbidden(s))) {
+                    enabledSomewhere = true;
+                    break;
+                }
+            }
+            if (!enabledSomewhere)
+                continue;
+            out.transition = t;
+            out.label = tr.label;
+            out.goal = GoalTier::Rare;
+            const RareSpec &rs = *tr.rare;
+            if (rs.waitForMs > 0) {
+                out.status = SuggestionStatus::Dwell;
+                out.dwell = std::chrono::milliseconds(rs.waitForMs);
+                out.reason = "dwelling at the enabling state of rare transition '" + tr.id + "' for "
+                             + std::to_string(rs.waitForMs) + " ms";
+            } else {
+                out.status = SuggestionStatus::Wait;
+                out.reason = "rare transition '" + tr.id + "' is enabled: waiting for the SUT to fire it";
+            }
+            return out;
+        }
+    }
+
     // --- distance to the nearest goal: one backward Dijkstra over the explored graph ----------
     const std::size_t n = rg_.numStates();
     std::vector<std::uint32_t> cost(n, kInf);
@@ -155,15 +208,20 @@ Suggestion Suggester::suggest(const BeliefTracker &tracker)
     std::priority_queue<Item, std::vector<Item>, std::greater<Item>> heap;
     std::size_t goalSeeds = 0;
 
+    // DeepSeek V4.1 Flash: a rare goal wins an equal-cost tie against any
+    // other tier (the historical tiers keep their mutual order).
+    const auto tierRank = [](GoalTier t) { return t == GoalTier::Rare ? 0 : 1; };
     const auto seed = [&](StateId u, std::uint32_t c, GoalTier t) {
         ++goalSeeds;
-        if (c < cost[u]) {
+        if (c < cost[u] || (c == cost[u] && tierRank(t) < tierRank(tier[u]))) {
             cost[u] = c;
             tier[u] = t;
             heap.push({c, u});
         }
     };
     const auto edgeTier = [&](const Edge &ed) {
+        if (cfg_.huntRare && rareGoal(ed.transition))
+            return GoalTier::Rare;
         return db_.transitionHits(ed.transition) == 0 ? GoalTier::NewTransition : GoalTier::Edge;
     };
 
@@ -179,14 +237,22 @@ Suggestion Suggester::suggest(const BeliefTracker &tracker)
         }
         if (board_.classOf(u) == TargetBoard::StateClass::Seeking)
             seed(u, cfg_.penaltyTarget, GoalTier::Target);
+        // DeepSeek V4.1 Flash: an enabling state of an unseen rare transition
+        // is itself the goal -- being there is what gives the transition its
+        // chance, not taking its edge (which may be the SUT's own move).
+        bool rareSource = false;
         EdgeId e = rg_.firstEdge(u);
         for (const Edge &ed : rg_.successors(u)) {
+            if (cfg_.huntRare && rareGoal(ed.transition))
+                rareSource = true;
             if ((!board_.forbidden(ed.target) || !vetoSatisfied) && db_.edge(e).definite == 0) {
                 const GoalTier t = edgeTier(ed);
                 seed(u, 1 + penalty(t), t);  // the edge itself is the last step
             }
             ++e;
         }
+        if (rareSource)
+            seed(u, cfg_.penaltyRare, GoalTier::Rare);
     }
 
     while (!heap.empty()) {
@@ -201,7 +267,12 @@ Suggestion Suggester::suggest(const BeliefTracker &tracker)
             // targets; Penalise and Ignore let the distance search pass.
             if (vetoSatisfied && board_.forbidden(p.from))
                 return;  // plans never pass through a forbidden state
-            if (c + 1 < cost[p.from]) {
+            // DeepSeek V4.1 Flash: a rare goal also wins an equal-cost tie
+            // here. Without this, a fresh uncovered edge out of a state on the
+            // way to a rare source would keep its own tier at the same cost,
+            // and the rare priority would be lost on the last step.
+            if (c + 1 < cost[p.from]
+                || (c + 1 == cost[p.from] && tierRank(tier[v]) < tierRank(tier[p.from]))) {
                 cost[p.from] = c + 1;
                 tier[p.from] = tier[v];
                 heap.push({c + 1, p.from});
@@ -286,14 +357,20 @@ Suggestion Suggester::suggest(const BeliefTracker &tracker)
             if (db_.edge(e).definite == 0) {
                 const GoalTier t = edgeTier(ed);
                 const std::uint32_t sc = 1 + penalty(t);
-                if (sc < best) {
+                if (sc < best || (sc == best && tierRank(t) < tierRank(bestTier))) {
                     best = sc;
                     bestTier = t;
                 }
             }
-            if (cost[ed.target] != kInf && 1 + cost[ed.target] < best) {
-                best = 1 + cost[ed.target];
-                bestTier = tier[ed.target];
+            if (cost[ed.target] != kInf) {
+                const std::uint32_t sc = 1 + cost[ed.target];
+                const GoalTier t = tier[ed.target];
+                // DeepSeek V4.1 Flash: an equal-cost goal reached through the
+                // target keeps its tier -- and a rare one wins that tie.
+                if (sc < best || (sc == best && tierRank(t) < tierRank(bestTier))) {
+                    best = sc;
+                    bestTier = t;
+                }
             }
         }
 
@@ -325,14 +402,30 @@ Suggestion Suggester::suggest(const BeliefTracker &tracker)
     out.vetoed = vetoed;
 
     if (!reachable.empty()) {
-        const auto better = [](const Eval &a, const Eval &b) {
+        // DeepSeek V4.1 Flash: "rare outranks the rest" (doku section 30).
+        // Whenever a candidate can lead to a rare goal, only those candidates
+        // compete; the ordinary tiers are the fallback for when no rare goal
+        // is reachable through any input.
+        const bool anyRare = cfg_.huntRare
+                             && std::any_of(reachable.begin(), reachable.end(),
+                                            [](const Eval &e) { return e.goal == GoalTier::Rare; });
+        std::vector<const Eval *> pool;
+        pool.reserve(reachable.size());
+        for (const Eval &e : reachable)
+            if (!anyRare || e.goal == GoalTier::Rare)
+                pool.push_back(&e);
+
+        const auto better = [&](const Eval &a, const Eval &b) {
             if (a.effective != b.effective)
                 return a.effective < b.effective;
             if (a.robustness != b.robustness)
                 return a.robustness > b.robustness;
+            if (a.goal != b.goal)
+                return tierRank(a.goal) < tierRank(b.goal);
             return a.cand->transition < b.cand->transition;
         };
-        const Eval *w = &*std::min_element(reachable.begin(), reachable.end(), better);
+        const Eval *w = *std::min_element(pool.begin(), pool.end(),
+                                          [&](const Eval *a, const Eval *b) { return better(*a, *b); });
 
         // GLM-5.3-Flash: with a seed, break exact ties (same score AND same
         // robustness) with a seeded random pick instead of the lowest
@@ -342,9 +435,9 @@ Suggestion Suggester::suggest(const BeliefTracker &tracker)
         // the arbitrary last resort is randomised.
         if (cfg_.tieBreakSeed != 0) {
             std::vector<const Eval *> tied;
-            for (const Eval &e : reachable)
-                if (e.effective == w->effective && e.robustness == w->robustness)
-                    tied.push_back(&e);
+            for (const Eval *e : pool)
+                if (e->effective == w->effective && e->robustness == w->robustness)
+                    tied.push_back(e);
             if (tied.size() > 1) {
                 std::mt19937_64 rng(cfg_.tieBreakSeed + tieCall_ * 0x9E3779B97F4A7C15ULL);
                 w = tied[rng() % tied.size()];
@@ -352,14 +445,23 @@ Suggestion Suggester::suggest(const BeliefTracker &tracker)
             ++tieCall_;
         }
 
+        const Transition &chosen = net.transitions[w->cand->transition];
         out.status = SuggestionStatus::Suggest;
         out.transition = w->cand->transition;
-        out.label = net.transitions[w->cand->transition].label;
+        out.label = chosen.label;
         out.robustness = w->robustness;
         out.hazard = w->hazard;
         out.goal = w->goal;
         out.steps = w->score - std::min(w->score - 1, penalty(w->goal));
         out.reason = "leads to " + goalText(w->goal) + " in " + std::to_string(out.steps) + " step(s)";
+        // DeepSeek V4.1 Flash: a controllable rare input is sent only after
+        // its wait-for has elapsed at the enabling state (doku section 30).
+        if (cfg_.huntRare && chosen.rare && rareGoal(w->cand->transition)
+            && chosen.rare->waitForMs > 0) {
+            out.dwell = std::chrono::milliseconds(chosen.rare->waitForMs);
+            out.reason += "; dwelling for " + std::to_string(chosen.rare->waitForMs)
+                          + " ms before sending the input";
+        }
         return out;
     }
 

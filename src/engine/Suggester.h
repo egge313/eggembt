@@ -1,6 +1,10 @@
 // Suggests the next input (controllable transition) to send to the SUT.
 //
 // WHAT IS WORTH REACHING (goals), cheapest first:
+//   Rare           the enabling state of an unseen rare transition that still
+//                  has hunting attempts left (DeepSeek V4.1 Flash, --hunt-rare;
+//                  doku section 30). While such a goal is reachable it wins
+//                  over every other tier.
 //   Target         a state of a target still being sought (error marking,
 //                  deadlock, terminal cycle; see TargetBoard)
 //   NewTransition  an edge whose transition has never been definitely covered
@@ -62,6 +66,7 @@
 #include "engine/TSuffix.h"
 #include "engine/TargetBoard.h"
 
+#include <chrono>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -111,6 +116,14 @@ struct SuggesterConfig {
     // (--satisfied-target-policy). Veto is the historical hard refusal.
     SatisfiedTargetPolicy satisfiedTargets = SatisfiedTargetPolicy::Veto;
 
+    // DeepSeek V4.1 Flash: hunt transitions marked "rare" (--hunt-rare, doku
+    // section 30). Their enabling states become Rare goals that outrank every
+    // other tier; an enabled non-controllable rare transition makes the
+    // suggester dwell there instead of moving on. Off is the historical
+    // behaviour: the marker is inert.
+    bool huntRare = false;
+    std::uint32_t penaltyRare = 0;  // tier penalty, in steps
+
     // GLM-5.3-Flash: 0 breaks exact ties deterministically (more robust input,
     // then lower transition index); a non-zero seed chooses reproducibly at
     // random among exactly equal candidates. Copied from
@@ -119,23 +132,29 @@ struct SuggesterConfig {
 };
 
 enum class SuggestionStatus {
-    Suggest,  // send `label`
+    Suggest,  // send `label` (after `dwell`, when it is set)
+    Dwell,    // stay in the current state for `dwell`: a rare SUT move may fire
     Wait,     // nothing to send; the SUT is expected to produce an output
     Done,     // no goal is left (everything explored is covered, targets satisfied)
     Stuck     // goals exist but none is reachable from here: end the run, restart
 };
 
-enum class GoalTier : std::uint8_t { Target, NewTransition, Edge, Frontier, None };
+enum class GoalTier : std::uint8_t { Rare, Target, NewTransition, Edge, Frontier, None };
 
 struct Suggestion {
     SuggestionStatus status = SuggestionStatus::Stuck;
-    TransitionIndex transition = 0;  // valid for Suggest
+    TransitionIndex transition = 0;  // valid for Suggest and Dwell (the rare transition)
     std::string label;
     double robustness = 0.0;         // 0..1, see above
     double hazard = 0.0;             // 0..1
     std::uint32_t steps = 0;         // steps to the goal, including the suggested one
     GoalTier goal = GoalTier::None;
     std::string reason;
+    // DeepSeek V4.1 Flash: the rare dwell (doku section 30). For a Dwell it is
+    // the time to stay put; for a Suggest it is a delay before the stimulus
+    // (a controllable rare transition: wait at the enabling state first, then
+    // send). Zero means no dwell.
+    std::chrono::milliseconds dwell{0};
     std::vector<std::string> vetoed; // labels refused because they lead straight into a forbidden state
                                      // (DeepSeek V4.1 Flash: only under SatisfiedTargetPolicy::Veto)
 };
@@ -164,6 +183,10 @@ public:
 
 private:
     std::uint32_t penalty(GoalTier tier) const;
+
+    // DeepSeek V4.1 Flash: is t a rare transition that is still unseen and
+    // still has hunting attempts left? (The --hunt-rare test is the caller's.)
+    bool rareGoal(TransitionIndex t) const;
 
     ReachabilityGraph &rg_;
     const CoverageDb &db_;

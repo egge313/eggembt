@@ -466,6 +466,7 @@ struct TstPnml {
         b.input(busy, serve, 2).input(lamp, serve).output(serve, idle);
         b.inhibitor(lamp, tick).input(idle, tick).output(tick, idle);
         b.milestone(serve, 2);
+        b.rare(serve, pn::RareSpec{0.002, 9, 7000});  // DeepSeek V4.1 Flash: rare hunt (doku section 30)
         b.initial("start", {{idle, 1}, {lamp, 1}});
         b.initial("late", {{busy, 2}});
         b.targetMarking("served", {{idle, 1}});
@@ -541,6 +542,24 @@ struct TstPnml {
         T_VERIFY(places != nullptr);
         T_COMPARE(places->items().size(), std::size_t(1));
         T_COMPARE(places->items()[0].find("bound")->asNumber(), 3.0);
+
+        // DeepSeek V4.1 Flash: the rare hunting contract travels in both the
+        // human-readable comment and the machine-readable annotation (doku
+        // section 30).
+        const JsonValue *transitions = ann.find("transitions");
+        T_VERIFY(transitions != nullptr);
+        const JsonValue *serveAnn = nullptr;
+        for (const JsonValue &t : transitions->items())
+            if (const JsonValue *id = t.find("id"); id && id->asString() == "serve")
+                serveAnn = &t;
+        T_VERIFY(serveAnn != nullptr);
+        const JsonValue *rare = serveAnn->find("rare");
+        T_VERIFY(rare != nullptr);
+        T_VERIFY(rare->find("p")->asNumber() > 0.0019 && rare->find("p")->asNumber() < 0.0021);
+        T_COMPARE(rare->find("attempts")->asNumber(), 9.0);
+        T_COMPARE(rare->find("wait-for")->asNumber(), 7000.0);
+        T_VERIFY(doc.find("rare p") != std::string::npos);
+        T_VERIFY(doc.find("wait-for 7000 ms") != std::string::npos);
     }
 
     // DeepSeek V4.1 Flash: ids that are not XML names cannot be PNML ids. The
