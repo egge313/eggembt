@@ -45,7 +45,7 @@ the build tree; nothing outside links against them.
 
     ctest --test-dir build
 
-That is the whole suite: **18 entries** — 17 unit suites plus `cli_test.sh`,
+That is the whole suite: **19 entries** — 18 unit suites plus `cli_test.sh`,
 which spawns the real binary against the examples, over pipes and sockets. It
 takes about a minute on a laptop (the pheromone benchmark is the slow one,
 about nine seconds on its own).

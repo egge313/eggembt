@@ -51,11 +51,12 @@ Requires CMake ≥ 3.16 and a C++17 compiler. No third-party dependencies.
 `ref-agent` into `$PREFIX/bin`; `INSTALL.md` has the prerequisites, the test
 commands, the platform notes and troubleshooting.
 
-The 18 tests are 17 unit test suites (engine, coverage, belief tracking,
+The 19 tests are 18 unit test suites (engine, coverage, belief tracking,
 livelock analysis, suggester, ant colony, async event queue, session, remote
 plug-in, transports, model loader, PNML import, crash experiments, coverage
-overlap, run log, pheromone benchmark, lifecycle inputs) plus `cli_test.sh`,
-which runs the `eggembt` binary end to end against the examples.
+overlap, run log, pheromone benchmark, lifecycle inputs, run-size benchmark)
+plus `cli_test.sh`, which runs the `eggembt` binary end to end against the
+examples.
 
 ## Model format and plug-in protocol
 
@@ -875,7 +876,22 @@ edges), because the fork is reached about five suggestions after the
 deposit. The test pins that plateau instead of manufacturing a cliff, and
 the between-runs contrast (2 crashes, 4 productive runs, 777 edges) remains.
 
-The suite stands at **18 CTest entries** — 17 unit suites (297 tests;
+**Many short runs or a few long ones?** A ten-minute campaign can spend its
+budget on 266 runs of 50 events or 4 runs of 3200. The new `tst_comm10k`
+benchmark builds a 10,000-state model of four communicating machines (24
+places, 36 transitions, 64,000 edges, four goals, four errors) and measures
+both ends. On three seeds the mean covered edges were 12,198 (50), 12,527
+(200), 13,254 (800) and 11,798 (3200). The best-to-worst mean spread is
+12 %, smaller than the seed-to-seed spread within a size, and the ordering
+changed between seeds: many tiny runs were not better, nor were four huge
+ones. The only monotonic signal was per event — 0.918 new edges at 50 events
+per run up to 0.972 at 3200 — because every short run re-tests its initial
+region. A middle range (a few hundred to a few thousand events per run) is a
+sensible place to start; `--max-events 10000` is a safety cap, not a
+coverage target. `doku.md` §32 has the table and `tst_comm10k --long` runs
+the four campaigns.
+
+The suite stands at **19 CTest entries** — 18 unit suites (298 tests;
 `tst_pnml` 24, `tst_jsonnetloader` 45, `tst_session` 58, `tst_suggest` 21,
-`tst_ants` 23, `tst_pheromone` 3) plus `cli_test.sh` (41 scenarios,
-+`rare`) — all green. `eggembt version` prints `v0.0.4`.
+`tst_ants` 23, `tst_pheromone` 3, `tst_comm10k` 1) plus `cli_test.sh` (41
+scenarios, +`rare`) — all green. `eggembt version` prints `v0.0.4`.

@@ -136,6 +136,16 @@ target_include_directories(tst_pheromone PRIVATE tests)
 target_link_libraries(tst_pheromone PRIVATE mbt_engine)
 add_test(NAME tst_pheromone COMMAND tst_pheromone)
 
+# DeepSeek V4.1 Flash: the run-size benchmark (doku section 32): four
+# communicating state machines over a ring of channels, 10,000 states and
+# 64,000 edges, run for a fixed wall-clock budget with growing run lengths.
+# The default CTest entry is a short structural smoke test; --long runs
+# the ten-minute measurement by hand.
+add_executable(tst_comm10k tests/tst_comm10k.cpp)
+target_include_directories(tst_comm10k PRIVATE tests)
+target_link_libraries(tst_comm10k PRIVATE mbt_engine)
+add_test(NAME tst_comm10k COMMAND tst_comm10k)
+
 # DeepSeek V4.1 Flash: the reserved lifecycle labels (doku section 26): the
 # engine-landed start/restart/resume, the pause/down gate, and the campaign
 # that presses the model's own start before it tests anything.

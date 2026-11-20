@@ -2199,3 +2199,117 @@ The interpretation for a user is in the user manual (§7.4 and §12.3): the
 default is safe on this shape, the run boundary is the stronger lever, and
 the parameter should be moved only for a model whose fork is much deeper
 into the run than this benchmark's.
+
+## 32. Update: 20 November 2026 (DeepSeek V4.1 Flash)
+
+### The question
+
+§27 added the wall-clock budget, but a budget does not say how to spend it:
+one campaign can make many short runs or a few long ones, and `--max-events`
+is the knob. Egge asked for a state space of about 10,000, made of 3-5
+communicating state machines, with few error states and one or two targets
+per process, and for a ten-minute comparison with growing run lengths. This
+section builds that model and measures which end of the range wins.
+
+### The model
+
+Four machines share a ring of four one-place channels. Machine i runs
+
+    p0 --step--> p1 --step--> p2 --pass--> p0
+                     \--send--> p2, and a token into channel i if it is empty
+    p2 --recv--> p0 (takes the token from channel i-1)
+    p1 --finish--> goal --again--> p0
+    p0 --fault--> error --recover--> p0
+
+Every transition is controllable and has a distinct label. The benchmark's
+SUT is a synchronous deterministic replica of the controllable part, so the
+measurement is the engine's guidance and the run boundary, not the SUT's
+speed. Each machine has five places and the four channels are binary. The
+reachable state space is exactly 5^4 * 2^4 = 10,000 states over 24 places
+and 36 transitions, with 64,000 edges. Each machine has one goal and one
+error marking (four of each, matched with `Covers`); the four targets are
+ordinary goals, not intentional campaign enders.
+
+The free step p1 -> p2 is deliberate. Without it a full channel also blocks
+its machine from moving on, some combinations of machine places and channel
+occupancy are unreachable, and the model misses the requested 10,000 (the
+first draft had 9,073 states). With it the state space is the product of the
+five machine places and the binary channels, and every error marking is
+reached in every campaign.
+
+### The measurement
+
+Ten-minute wall-clock budget per campaign; the static analysis runs before
+the deadline starts. Ants on, T-suffix 4, `satisfiedTargets = Ignore` (so a
+satisfied goal does not reshape the graph under the different run sizes),
+`maxRuns` effectively unbounded, `--max-events` 50, 200, 800 and 3200. Three
+seeds. The four campaigns of one seed ran in parallel, one per core; the
+seeds rotated the core assignment (50/200/800/3200 on cores 0/1/2/3, then
+3/2/1/0, then 1/0/3/2), so each run size used each core once and the means
+do not inherit a fast core.
+
+    events/run   runs    events    states    edges    edges/event
+       50         266    13,283     4,897    12,198      0.918
+      200          66    13,043     5,049    12,527      0.960
+      800          18    13,726     5,251    13,254      0.966
+     3200           4    12,134     4,877    11,798      0.972
+
+    per-seed edges (seed 1 / 2 / 3)
+       50: 10,847 / 12,380 / 13,368
+      200:  9,851 / 13,774 / 13,955
+      800: 12,168 / 12,371 / 15,222
+     3200: 11,735 / 11,513 / 12,145
+
+Every campaign stopped on `time budget reached` after 600.1-600.2 s, and all
+four error markings were found in every campaign. The run sizes describe the
+intended shapes: a mean of 266 runs of 50 events up to 4 runs of 3200.
+
+### What it says
+
+- **Many short runs are not better.** The 50-event configuration made about
+  266 runs, four to sixty-six times as many as the others, and covered
+  12,198 edges on average — below the 200- and 800-event means, and never
+  first in a seed. The extra run boundaries do not buy coverage on this
+  model.
+- **Very few long runs are not better either.** 3200 events per run made
+  four runs per campaign and had the lowest mean, 11,798. It was last on two
+  seeds and second on the other. Four runs are too few to let the campaign
+  cover much ground, even though each run is long.
+- **The middle was best on average, but the spread is small.** 800 events
+  per run had the best mean (13,254), winning seeds 1 and 3; 200 won seed 2.
+  The best-to-worst mean difference is 12 %, and the seed-to-seed spread
+  within one size reaches 41 % (200: 9,851 to 13,955), so the ordering is a
+  tendency, not a law.
+- **The reliable part is the per-event rate.** Edges per event rose with the
+  run length: 0.918 at 50, 0.960 at 200, 0.966 at 800, 0.972 at 3200. A
+  short run re-tests the initial region on every restart, so a slightly
+  larger share of its events lands on already-covered edges. The campaign
+  processes roughly the same number of events in ten minutes at every size
+  (12.1k-13.7k on average), so the totals stay within a few percent of each
+  other.
+
+The practical answer for this shape: run size is a weak coverage lever. The
+tool's 10,000-event default is a safety cap, not a coverage target. Choose
+`--max-events` for what a run boundary really controls: how much of a bad
+run has to be repeated, how often the SUT setup is paid, and how much of the
+model one run can reach before restarting. If coverage is the only goal, a
+middle range of a few hundred to a few thousand events per run is a
+reasonable place to start; neither extreme is measurably better.
+
+### The test
+
+`tests/tst_comm10k.cpp` builds the model and the synchronous SUT. Its CTest
+form is a quick structural check, deliberately without a wall clock: it pins
+the 10,000 states and 64,000 edges, then runs three 10-event runs and one
+30-event run and checks the run-limit semantics (3 runs versus 1, the
+per-run cap, and that the exits are normal). The long form is opt-in:
+
+    ./build/tst_comm10k --long
+    ./build/tst_comm10k --run-events 800 --budget 600 --seed 1
+
+`--long` runs the four campaigns one after another with a 600-second budget
+each; `--run-events` runs a single configuration, which is how the three
+seeds above were measured (one process per core). `--no-ants` and
+`--tsuffix` are there for a control run. The benchmark is a new CTest entry;
+the suite now stands at 19 CTest entries, 18 unit suites (298 unit tests)
+and 41 CLI scenarios.

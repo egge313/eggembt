@@ -1,8 +1,13 @@
 # Egge's Model-Based Tester (eggembt) — the user manual
 
-*GLM-5.3-Flash, 17 November 2026. This manual is new — the whole file is the
-addition of the batch documented in `doku.md` §16. Read `README.md` for a
-short overview and `doku.md` for the design record. Two conventions:*
+This file has been mostly written by two AIs, GLM-5.3-Flash and
+DeepSeek V4.1 Flash. It has been reviewed by Egge.
+
+First version of this malual 17 November 2026.
+
+This manual is new — the whole file is the addition of the batch
+documented in `doku.md` §16. Read `README.md` for a short overview and
+`doku.md` for the design record. Two conventions:*
 
 - *Every blockquote (`>`) in this manual is a text Egge actually sent, quoted
   byte for byte. Nothing is invented; the explanations around the quotes are
@@ -1860,3 +1865,50 @@ the point of the switch, but it is also a real cost:
 `--require-complete` treats a still-pending rare transition as incomplete,
 which is consistent with the hunt's own notion of completeness: the campaign
 has not done what it was asked to do yet.
+
+### 12.10 How long a run should be
+
+`--max-events` bounds one run, not the campaign. A campaign with a
+`--budget` can therefore spend the same time on many short runs or on a few
+long ones, and every run starts again at the model's initial marking while
+the coverage and the pheromone stay with the campaign. The natural question
+is which shape buys more coverage. The benchmark in `tests/tst_comm10k.cpp`
+was built to answer it: four communicating machines over a ring of four
+binary channels, 24 places, 36 transitions, exactly 10,000 states and
+64,000 edges, four goals and four error states, run for ten minutes at 50,
+200, 800 and 3200 events per run on three seeds (`doku.md` §32).
+
+The answer is that run size is a weak lever: neither many tiny runs nor a
+few huge ones is better. On the mean of the three seeds:
+
+```
+events per run   edges covered   edge per event
+     50             12,198           0.918
+    200             12,527           0.960
+    800             13,254           0.966
+   3200             11,798           0.972
+```
+
+The best-to-worst mean spread is 12 %, and the seed-to-seed spread within
+one size reaches 41 % (200 events: 9,851 to 13,955), so there is no sharp
+optimum. Two trends are reliable. First, a shorter run re-tests its initial
+region on every restart: per event it covered 4-6 % fewer new edges than a
+run of 200 or more. Second, both extremes were weak on the mean; four runs
+of 3200 events per campaign was the weakest, and 50 events per run was not
+better than the middle. The 800-event middle was best on average, but it won
+only two of the three seeds.
+
+The practical reading:
+
+- The default `--max-events 10000` is a safety cap, not a recommendation.
+  It protects the campaign from one runaway run; it does not make coverage
+  better or worse by itself.
+- Choose `--max-events` for what the run boundary really controls: how much
+  of a bad run has to be repeated, how often the SUT's setup is paid, and
+  how deep one run goes before the campaign restarts. A long run can reach
+  behaviour near the end of a deep path; a short run restarts from the
+  initial marking more often.
+- If coverage is the only goal, start in the middle (a few hundred to a few
+  thousand events) rather than at either extreme, and measure your own
+  model: the comparison is cheap to repeat with `--budget` and two values of
+  `--max-events`.
