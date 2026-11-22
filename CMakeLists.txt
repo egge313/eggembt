@@ -10,7 +10,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(Threads REQUIRED)
 
-# GLM-5.3-Flash: build with warnings enabled, as doku.md §10 promises for this
+# GLM-5.3-Flash: build with warnings enabled, as journal.md §10 promises for this
 # code (the original Qt-based CMakeLists had no warning flags).
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     add_compile_options(-Wall -Wextra)

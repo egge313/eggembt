@@ -624,6 +624,9 @@ JsonValue campaignJson(const Net &net, const Session &session, const CampaignRep
     // GLM-5.3-Flash: how much of the earlier rounds' pheromone teaching a
     // continued campaign starts with, in percent (doku section 16).
     o.set("restored_pheromones", JsonValue::number(static_cast<double>(cfg.restoredPheromonePercent)));
+    // DeepSeek V4.1 Flash: whether the rebuilt teaching aged between restored
+    // runs, sparing matured targets and errors (doku section 34).
+    o.set("evaporate_restored_pheromones", JsonValue::boolean(cfg.evaporateRestoredPheromones));
 
     // GLM-5.3-Flash: the crash predictions of the model and their reproduction
     // experiments (doku section 17), plus the two knobs so a campaign can be

@@ -2313,3 +2313,185 @@ seeds above were measured (one process per core). `--no-ants` and
 `--tsuffix` are there for a control run. The benchmark is a new CTest entry;
 the suite now stands at 19 CTest entries, 18 unit suites (298 unit tests)
 and 41 CLI scenarios.
+
+## 33. Update: 21 November 2026 (DeepSeek V4.1 Flash)
+
+### The question
+
+`deadlock` and `livelock` each denoted a static graph property and a run
+outcome without the manual separating them. Egge asked for a thorough
+explanation of specification deadlock, SUT deadlock, specification livelock
+and SUT livelock, and of the consequences of strongly connected components
+with or without milestones and targets. No engine code changed;
+`userdoc.md` §6.12 is the explanation, and this section records the
+semantics it relies on.
+
+### Model finding vs run outcome
+
+- **Specification deadlock**: an expanded reachability-graph state with no
+  enabled transition and kind `Normal` (`ReachabilityGraph::isDeadlock`).
+  Target and error states are excluded; if a marking matches both, error
+  wins (`Semantics.cpp`). A state cut off by the state limit is not expanded,
+  so it is never a deadlock.
+- **The `deadlock` outcome**: `BeliefTracker::handleQuiescence` first
+  narrows the belief to states with no enabled output or internal
+  transition. It reports `StepStatus::Deadlock` only if every remaining
+  state is `Normal` and has no enabled transition at all. If every possible
+  state owes output or an internal step, the same silence is a `deviation`;
+  with no quiescence report the session aborts on `--idle-timeout`. A SUT
+  that hangs elsewhere therefore usually appears as `deviation` or
+  `aborted`, not as `deadlock`.
+- **Specification livelock**: `analyzeLivelocks` reports a strongly
+  connected component that contains a cycle, has no outgoing edge, and has
+  no `StateKind::Target` member. It is a property of the explored graph
+  only; a component is certain when no member is incomplete and no firing
+  was dropped by a place bound. Edges into unexpanded states count as
+  exits. `TargetBoard` keeps only certain terminal findings as livelock
+  targets.
+- **SUT livelock**: the `BeliefTracker` watch, enabled by
+  `livelockTimeoutMs > 0`. At least `livelockMinEvents` observed events
+  without progress and the timeout since the last progress produce
+  `StepStatus::Livelock`. Progress is a sent stimulus, a state not seen
+  earlier in the run, `possiblyTarget()`, or quiescence. The watch has no
+  milestone category and does not require a terminal cycle in the model.
+
+### SCCs, targets, milestones
+
+- A cyclic SCC with an exit is not terminal and produces no livelock
+  finding, even if the SUT spins in it. The run-time watch can still flag
+  that refusal to leave when it is enabled.
+- A terminal cyclic SCC without a target marking is a specification
+  livelock. By default the campaign seeks each certain one once
+  (`--livelock-policy once`) and then forbids its states.
+- A target marking in the terminal SCC legitimizes the whole component,
+  plain or intentional. The static test asks only for `StateKind::Target`;
+  the intentional flag affects the run (campaign end), not the livelock
+  finding. Target states are never deadlocks, and the run-time watch counts
+  a target only when it is in the current belief, not merely somewhere in
+  the SCC.
+- A milestone is a transition annotation (`Transition::milestone`), not a
+  marking, so `LivelockAnalysis` cannot see it. A targetless terminal cycle
+  with a milestone is still a specification livelock; the milestone's
+  1.5 × rank attract deposit does not override the livelock target's
+  forbidden state class. In a non-terminal cycle the milestone is an
+  ordinary reward on the way.
+- Error states are not targets for this test; a terminal cycle that
+  contains one can still be a targetless terminal cycle, while the error
+  state keeps its own error class on the target board.
+
+The new user-manual table, the target/milestone consequences and the
+report-reading checklist are §6.12. Existing §3.2, §5, §6.5, §6.6 and
+§12.6 now point to it. While writing it, the `--max-events` description was
+corrected in the manual: reaching the per-run limit ends the run normally
+(`Completed`, "run length limit", §12.10), it is not an event-queue overflow
+abort.
+
+## 34. Update: 22 November 2026 (DeepSeek V4.1 Flash)
+
+### The question
+
+The carry-over (§16) merges the pheromone teaching of every restored run and
+tones each deposit down by `--restored-pheromones`, but it never ages the
+merge: a three-round-old lesson enters exactly as strong as a one-round-old
+one. Egge asked for the missing alternative:
+
+> When merging several runs, there shall be an option to allow for
+> evaporation except for "matured" targets, errors, and such, which have
+> reached their "visited N times" criterion.
+
+The switch is opt-in. Without it the historical merge is byte for byte what
+it was.
+
+### What "matured" means
+
+The code already has the phase. `TargetBoard` assigns `TargetPhase::Satisfied`
+when a target's hits reach its policy count, and `StateClass::Forbidden` to
+its states. That is the "visited N times" criterion:
+
+- an error marking: `errorTarget(i)`, from `once` (1), `avoid` (0), or
+  `until_covered`/`target_hits` (the explicit count or the coverage
+  threshold);
+- the single deadlock target: `TargetPolicies::deadlock`, `deadlockHits`;
+- each certain terminal livelock: `TargetPolicies::livelock`,
+  `livelockHits`;
+- an intentional target marking: first certain visit.
+
+A milestone is a transition reward, not a marking with a visit count, so it
+does not mature. Its attract ages normally -- unless the milestone's
+destination state is itself matured, in which case the destination rule
+spares the edge: the exception is keyed on the edge's target, not on where
+the deposit came from. A crash experiment still `seeking` is not `satisfied`
+either; its site keeps the `Seeking` class through the board's last override
+and ages until the experiment resolves. A plain, non-intentional target
+marking is an idle state for the livelock analysis, not a campaign target,
+so it is not spared.
+
+### The merge boundary
+
+`Session::restore` ages **before** replaying the next recording, not after:
+
+    restore run 1: replay, rebuild
+    restore run 2: age the rebuilt teaching, replay, rebuild
+    restore run 3: age the rebuilt teaching, replay, rebuild
+    ...
+
+So run *i*'s deposits fade by one step for every later restored run, and the
+newest restored run enters at full rebuilt strength — the merge is
+chronological. The step is the ordinary `AntColony::age()` step: attract
+loses `evaporationAttract` (10 %), repel `evaporationRepel` (2 %), a
+saturated edge loses its attract, and the pair store ages at the same rates
+and is pruned below 1e-4. `--restored-pheromones` still scales every rebuilt
+deposit first; the merge aging is on top.
+
+The exception is implemented where the channels live. `AntColony::age(bool
+spareMatureTargets = false)` refreshes its `TargetBoard`; when the flag is
+set, every `Forbidden` state is spared:
+
+- an edge whose **target** is spared keeps both channels (only the
+  saturation rule still wipes a saturated attract);
+- a `(marking, T-suffix)` pair whose **state** is spared is not aged or
+  pruned.
+
+The back-propagated traces *behind* the direct way in are not spared: the
+rebuild has no provenance that would attribute them to the matured finding,
+and freezing whole predecessor cones would also freeze unrelated knowledge.
+The direct edge into the target carries the full deposit; the decayed
+predecessors age as usual. This is the documented approximation, in the same
+spirit as the rebuild's belief-span approximation (§16).
+
+### Wiring
+
+- `SessionConfig::evaporateRestoredPheromones` (default `false`).
+- `Session::restore`: when the switch is on and the campaign's static
+  analysis is enabled, `analyzeModel()` runs before the first restored run,
+  so terminal livelocks already have target findings. It then calls
+  `ants_.age(true)` before every replay once a run exists; otherwise nothing
+  changes.
+- CLI `--evaporate-restored-pheromones` (a flag), console Guidance
+  `restored pheromones: N%; merge evaporation: off | between restored runs,
+  matured targets spared`, campaign JSON `evaporate_restored_pheromones`.
+- `--evaporate-between-runs` remains the live campaign's aging boundary and
+  is independent. `report` keeps replaying and rebuilding without the merge
+  switch; its `--dump-pheromone` still shows the un-aged carry-over.
+
+### Tests
+
+- `tests/tst_ants.cpp` (`maturedTargetsAreSparedByMergeEvaporation`): a chain
+  ends in an error marking with `targetHits` 2, two paths mature it, and
+  `age(true)` leaves the matured way in and its pair at 9.0 while an ordinary
+  state's edge falls to 6.3 × 0.98 and its pair to 9.0 × 0.98; `age(false)`
+  then ages the matured way in too. `tst_ants` is now 24 tests.
+- `tests/tst_session.cpp` (`restoredPheromonesAgeBetweenRuns`): restoring a
+  crash first matures a `once` error; two later milestone runs age the rank-2
+  milestone attract (3.0, then 3.0 × 0.90 + 3.0) and its pair while the
+  error's 3.75 repel and pair survive; the switch off gives 3.0 + 3.0 = 6.0.
+  `tst_session` is now 59 tests.
+- `cli_test.sh` (`evaporate-restored-pheromones`): the console line and the
+  JSON key, plus the default `false` in the existing campaign report. The CLI
+  suite is now 42 scenarios.
+
+The full suite is still **19 CTest entries**, 18 unit suites (300 tests) and
+42 CLI scenarios, all green. `eggembt version` is `v0.0.5`, matching the git
+branch of the same name (`main` is the one exception: its name is not a
+version). The design record itself was renamed `doku.md` → `journal.md` in
+this batch.

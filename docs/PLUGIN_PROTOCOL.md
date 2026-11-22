@@ -96,7 +96,7 @@ and `resume` — arrive here like any other input. Pass them to the SUT's own
 control (its start/restart button, its stop/pause command): the point of the
 feature is an SUT that the plug-in cannot start or restart from the command
 line. The engine, not the plug-in, adjusts the run's position and its
-lifecycle gate (`doku.md` §26); the plug-in only acknowledges that the SUT's
+lifecycle gate (`journal.md` §26); the plug-in only acknowledges that the SUT's
 control was operated. The engine may send a `restart` (or `start`) before an
 ordinary input, because a model whose start/restart has no arcs begins every
 run by pressing it.
@@ -324,6 +324,6 @@ so event number 2 is held):
 
 ---
 
-The design context for this protocol is `doku.md` §8; synchronized events are
-`doku.md` §19. Document written on 14 November 2026 by DeepSeek V4.1 Flash; extended
+The design context for this protocol is `journal.md` §8; synchronized events are
+`journal.md` §19. Document written on 14 November 2026 by DeepSeek V4.1 Flash; extended
 with synchronized events on 18 November 2026 by DeepSeek V4.1 Flash.

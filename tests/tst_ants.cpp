@@ -328,6 +328,59 @@ static void testAgingCanWaitForTheRunBoundary()
     CHECK(perSuggestion.repel(intoS3) < 0.02 * 9.0);
 }
 
+static void testMaturedTargetsAreSparedByMergeEvaporation()
+{
+    // DeepSeek V4.1 Flash: the merge-time exception (doku section 34). The
+    // chain ends in an error marking with targetHits 2; two full paths mature
+    // it. Its way in then keeps the catastrophe pheromone through age(true),
+    // while an ordinary state's deposits and pairs age at the usual rates.
+    const Net net = makeChain(true);
+    ReachabilityGraph rg(net);
+    rg.addInitial(0);
+    rg.exploreAll();
+    CoverageDb db(rg);
+    pathRun(db, rg, 0, chainPath());
+    pathRun(db, rg, 0, chainPath());
+    CHECK(db.isErrorSatisfied(0));
+
+    const auto t5 = *net.findTransition("t5");
+    const auto t6 = *net.findTransition("t6");
+    const StateId s6 = findState(rg, Marking{0, 0, 0, 0, 0, 0, 1, 0});
+    const StateId s7 = findState(rg, Marking{0, 0, 0, 0, 0, 0, 0, 1});
+    const EdgeId intoS6 = *rg.findEdge(s6 - 1, t5);
+    const EdgeId intoS7 = *rg.findEdge(s6, t6);
+
+    TraceCascade atS6;
+    atS6.setLength(4);
+    atS6.push(stepHashOf(net.transitions[t5]));
+    TraceCascade atS7;
+    atS7.setLength(4);
+    atS7.push(stepHashOf(net.transitions[t6]));
+
+    AntConfig cfg;
+    cfg.tsuffixLength = 4;
+    cfg.antsPerIteration = 0;
+    AntColony colony(rg, db, cfg);
+    colony.depositRepel(s7, 9.0);  // the matured error's way in
+    colony.depositPairRepel(s7, atS7, 9.0);
+    colony.depositPairRepel(s6, atS6, 9.0);  // an ordinary arrival
+    CHECK(near(colony.repel(intoS7), 9.0));
+    CHECK(near(colony.pairRepel(s7, atS7), 9.0));
+    const double ordinaryEdge = colony.repel(intoS6);
+    CHECK(near(ordinaryEdge, 6.3));  // one back-propagation step at depthDecay 0.7
+
+    colony.age(/*spareMatureTargets=*/true);
+    CHECK(near(colony.repel(intoS7), 9.0));       // matured: spared
+    CHECK(near(colony.pairRepel(s7, atS7), 9.0));  // its pair: spared too
+    CHECK(near(colony.repel(intoS6), ordinaryEdge * 0.98));
+    CHECK(near(colony.pairRepel(s6, atS6), 9.0 * 0.98));
+
+    // Without the exception the same boundary ages the matured way in too.
+    colony.age();
+    CHECK(near(colony.repel(intoS7), 9.0 * 0.98));
+    CHECK(near(colony.pairRepel(s7, atS7), 9.0 * 0.98));
+}
+
 static void testUnexploredTerritoryAttractsAndLazyExpansionIsBudgeted()
 {
     // s0 -a-> s1 -b-> s2, explored lazily; nothing covered yet.
@@ -1155,6 +1208,7 @@ int main()
         {"pairsSeparateRoutesAndAreCapped", testPairsSeparateRoutesAndAreCapped},  // GLM-5.3-Flash
         {"pairsEvaporateAndArePruned", testPairsEvaporateAndArePruned},  // GLM-5.3-Flash
         {"agingCanWaitForTheRunBoundary", testAgingCanWaitForTheRunBoundary},  // DeepSeek V4.1 Flash
+        {"maturedTargetsAreSparedByMergeEvaporation", testMaturedTargetsAreSparedByMergeEvaporation},  // DeepSeek V4.1 Flash
         {"pairWeightRidesOnTheEdgeWeight", testPairWeightRidesOnTheEdgeWeight},  // GLM-5.3-Flash
         {"pairLayerSteersTheSuggester", testPairLayerSteersTheSuggester},  // GLM-5.3-Flash
         {"pairEntriesAreReadableAndSorted", testPairEntriesAreReadableAndSorted},  // DeepSeek V4.1 Flash

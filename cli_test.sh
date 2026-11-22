@@ -43,7 +43,7 @@ hasnt() { ! grep -q -- "$1" "$TMP/out" || fail "output unexpectedly has \"$1\"";
 
 begin version
 # DeepSeek V4.1 Flash: the version follows the git branch (doku section 20).
-run 0 "$EGGEMBT" version && has "^eggembt v0[.]0[.]4$"
+run 0 "$EGGEMBT" version && has "^eggembt v0[.]0[.]5$"
 
 # GLM-5.3-Flash: the credits, byte for byte as Egge asked for them.
 begin credits
@@ -287,6 +287,24 @@ run 0 "$EGGEMBT" run "$DRINKS" --simulate --quiescence 40 --evaporate-between-ru
     --json "$TMP/evaporation.json"
 grep -qF '"evaporate_between_runs":true' "$TMP/evaporation.json" \
     || fail "json does not report the run-boundary aging"
+
+begin evaporate-restored-pheromones
+# DeepSeek V4.1 Flash: the merge-time aging of restored teaching (doku
+# section 34). The switch is opt-in, the console names it, and the JSON
+# carries it; the exact sparing of matured targets is pinned in tst_ants and
+# tst_session.
+rm -f "$TMP/merge-evaporation.jsonl"
+run 0 "$EGGEMBT" run "$DRINKS" --simulate --quiescence 40 --log "$TMP/merge-evaporation.jsonl" --quiet
+run 0 "$EGGEMBT" run "$DRINKS" --simulate --quiescence 40 --log "$TMP/merge-evaporation.jsonl" \
+    --evaporate-restored-pheromones --no-color \
+    && has "merge evaporation: between restored runs, matured targets spared" \
+    && has "coverage complete"
+run 0 "$EGGEMBT" run "$DRINKS" --simulate --quiescence 40 --log "$TMP/merge-evaporation.jsonl" \
+    --evaporate-restored-pheromones --quiet --json "$TMP/merge-evaporation.json"
+grep -qF '"evaporate_restored_pheromones":true' "$TMP/merge-evaporation.json" \
+    || fail "json does not report the merge-time evaporation"
+grep -qF '"evaporate_restored_pheromones":false' "$TMP/r.json" \
+    || fail "json does not report the default merge-time evaporation"
 
 begin good-target
 # GLM-5.3-Flash: an intentional target marking is a good target state: a normal

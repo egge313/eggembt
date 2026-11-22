@@ -1,13 +1,21 @@
-# Egge's Model-Based Tester (eggembt) — the user manual
+# Egge's Model-Based Tester (eggembt) — The User Manual
+
+* Author: **Esa Kettunen** alias **Egge**
+* Affiliation: **Egge Collective**, currently comprising one (1) person
+* Contact: esa.kettunen@gmx.com
 
 This file has been mostly written by two AIs, GLM-5.3-Flash and
-DeepSeek V4.1 Flash. It has been reviewed by Egge.
+DeepSeek V4.1 Flash. The original draft and a preliminary
+implementation for the eggembt program was written by yet another Ai,
+Claude Sonnet, and later worked on by GLM and DeepSeek, all of based
+on Egge's ideas and prompts. The software and documentation have been
+reviewed by Egge.
 
-First version of this malual 17 November 2026.
+First version of this manual was written on 17 November 2026.
 
-This manual is new — the whole file is the addition of the batch
-documented in `doku.md` §16. Read `README.md` for a short overview and
-`doku.md` for the design record. Two conventions:*
+This manual is a recompilation of the daily records
+documented in `journal.md` §16. Read `README.md` for a short overview and
+`journal.md` for the design record. Two conventions:*
 
 - *Every blockquote (`>`) in this manual is a text Egge actually sent, quoted
   byte for byte. Nothing is invented; the explanations around the quotes are
@@ -325,7 +333,8 @@ answer in it.
 
   These are findings about the **model**, found before any SUT is touched.
   Fixing them is model work: declare a target marking, break the cycle, add
-  the missing output.
+  the missing output. §6.12 explains how these static findings relate to the
+  run outcomes `deadlock` and `livelock`.
 
 `eggembt explore MODEL --dot` writes the graph for Graphviz, so you can look at
 it.
@@ -419,7 +428,9 @@ modest repellent pheromone on every edge into the region (it is *set*, never
 accumulated, and never evaporates — static knowledge about the explored
 model), so runs learn to keep out, while still-sought states (an error
 marking, a deadlock, a livelock the board is deliberately heading for) and
-states that can still reach unknown territory stay excused.
+states that can still reach unknown territory stay excused. A target marking
+also decides whether a terminal cycle is a legitimate steady state or a
+specification livelock; §6.12 works that through.
 
 ---
 
@@ -490,7 +501,8 @@ The SUT goes silent — and silence is meaningful, because the tool reports
 500), the agent says "nothing more will come". If the reached markings are
 deadlocks of the model, the run is stranded exactly where the model says
 nothing can happen: a run-time deadlock. The outcome is `deadlock`;
-`--dump-on-deadlock` collects a post-mortem.
+`--dump-on-deadlock` collects a post-mortem. A silent SUT where the model
+expects output is *not* this outcome — §6.12 sorts the four terms out.
 
 ### 6.6 Run-time livelocks — `livelock`
 
@@ -503,6 +515,9 @@ can only tick and tock:
 ```
   run 1    livelock  315 events, 0 inputs, +2 states +2 edges  314 events over 400 ms without progress (no new state, no stimulus, no target marking)
 ```
+
+This is a run-time heuristic. The static terminal-cycle finding and the role
+of targets and milestones in it are §6.12.
 
 ### 6.7 SUT crashes — `sut_crashed`
 
@@ -517,13 +532,14 @@ in is marked attractive instead (§6.11).
 ### 6.8 Aborts — `aborted`
 
 Infrastructure problems, not (necessarily) the SUT's fault. The run aborts
-when the event queue overflows (`--max-events` per run, default 10000), when
-a sent input is never acknowledged (`--ack-timeout`, default 5000 ms), when
-the SUT stays silent while it owes output (`--idle-timeout`, default
-10000 ms), or when the agent cannot start or faults mid-run. The outcome is
-`aborted`; a campaign that aborts too many runs in a row stops itself ("too
-many aborted runs in a row") and the tool exits with the infrastructure code
-3.
+when the event queue overflows (events were lost), when a sent input is never
+acknowledged (`--ack-timeout`, default 5000 ms), when the SUT stays silent
+while it owes output (`--idle-timeout`, default 10000 ms), or when the agent
+cannot start or faults mid-run. The outcome is `aborted`; a campaign that
+aborts too many runs in a row stops itself ("too many aborted runs in a
+row") and the tool exits with the infrastructure code 3. Reaching
+`--max-events` is not an abort: the run ends normally with the detail "run
+length limit" (§12.10).
 
 ### 6.9 "Not complete" — a status, not a fault
 
@@ -627,6 +643,242 @@ credibility, 0.5–1.0; 1.0 would make certainty unreachable) and
 experiment state travels with the run log, so a continued campaign picks the
 experiments up where they stood.
 
+### 6.12 Specification vs SUT: deadlock, livelock, and the cycles in between
+
+`deadlock` and `livelock` are the oldest words in the tool and the easiest to
+misread, because each names two different things: a shape in the **model**
+(the specification and its reachability graph), and a behaviour of the **SUT**
+in one run. The report uses each word for only some of those combinations.
+This section separates them, then follows the consequences through the
+strongly connected components of the graph.
+
+| term | level | meaning in one line |
+|------|-------|---------------------|
+| **specification deadlock** | model | a reachable ordinary marking with no enabled transition |
+| **SUT deadlock** | run | the real system stops while the model still expects progress |
+| **specification livelock** | model | a terminal cycle without a target marking — the model may spin forever |
+| **SUT livelock** | run | the SUT keeps sending events, but a run makes no progress for the timeout |
+
+The outcome `deadlock` is the narrow overlap of the first two: the SUT is
+silent *and* the model agrees that nothing can happen. The outcome `livelock`
+is the fourth, measured against a timeout. The static findings appear in
+`check` and `explore`, not as run outcomes.
+
+**Specification deadlock.** A specification deadlock is a reachable marking
+of kind `Normal` in which no transition is enabled. "Normal" is the technical
+part: a marking that matches a target marking, or an error marking, is not
+ordinary. It has a declared meaning even when nothing can fire from it, so it
+is not a deadlock. If a marking matches both a target and an error, the error
+wins. The graph reports a deadlock only for a state that was actually
+expanded; a cut-off frontier from `--max-states` is never mistaken for one
+(§3.3).
+
+`check` prints the count (the `deadlocks: 0` line in §3.2 is this line for a
+clean model), `explore` lists the states, and both do this before any SUT is
+touched. A static finding is model advice, not a run failure: `check`
+returns 0. The campaign turns **all** deadlocks of the graph into **one**
+target, because a dump and a restart are expensive whichever trap is reached.
+`--deadlock-policy` defaults to `once`: the campaign steers into a deadlock
+once to confirm the SUT can reach it, then marks its states forbidden and
+plans around it (§8.5). Only if the SUT is quiescent exactly in such an
+ordinary dead end does the run end as `deadlock`, with the detail "the SUT is
+quiescent in a state where the model has a deadlock". That outcome is a
+failure exit (1); `--dump-on-deadlock` collects a post-mortem.
+
+**SUT deadlock.** This is the everyday phrase, not a report status: the real
+system stops making progress. What the tool reports depends on what the model
+expected at that moment:
+
+- **The model is deadlocked too.** The quiescence report narrows the belief
+  to ordinary dead ends, so the run ends as `deadlock` — the model agrees.
+- **Every possible state requires output or an internal step.** Silence is a
+  contradiction, not a deadlock: the run ends as `deviation` with "no output
+  arrived, but the model requires one in every possible state". This is the
+  usual face of a hung SUT.
+- **No quiescence report arrives at all.** After `--idle-timeout` (default
+  10000 ms) the run ends as `aborted` with "no event from the SUT for ... ms
+  although one was expected". Infrastructure problem by the tool's
+  classification, not a specification deadlock.
+- **The model waits for an input.** Silence is normal here; the SUT is
+  waiting for the tester. The campaign sends the next input. If the SUT never
+  acknowledges it, `--ack-timeout` ends the run as `aborted`.
+- **The belief is ambiguous.** The `deadlock` verdict requires every state
+  still possible after the quiescence report to be an ordinary dead end. One
+  remaining target state, one remaining error state, or one enabled
+  controllable transition there prevents it.
+
+Read `deadlock` as "the SUT stopped exactly where the model said nothing could
+happen", not as "the SUT stopped".
+
+**Specification livelock.** The static form is a **terminal cycle**: a
+strongly connected component (SCC) that
+
+1. contains a cycle — more than one state, or a single state with a self-loop;
+2. cannot be left — no edge, controllable or not, goes out of it; and
+3. contains no target marking.
+
+A **strongly connected component** is a maximal set of states in which every
+state can reach every other. Contract each SCC to one node and the graph
+becomes a DAG; a *terminal* component is a sink of that DAG. A cycle never
+crosses components, so it always lies inside one SCC. `explore` reports the
+counts and the findings:
+
+```
+Reachability graph
+  2 states, 2 edges, 2 expanded
+  0 target, 0 error states; 1 strongly connected components, 1 with a cycle
+
+Deadlocks  none
+
+Livelocks  1
+  terminal cycle, 2 state(s)
+    tick:1
+    tock:1
+```
+
+This is `examples/heartbeat-livelock.json`: the model can tick and tock
+forever and has no target marking. An ordinary single state with no enabled
+transition is a deadlock, not a livelock; a single state with a self-loop
+*is* a cycle and can be one. A non-cyclic component is never reported.
+
+The finding means "the specification permits endless behaviour that never
+reaches a declared legitimate end". That can be a modelling mistake or a
+deliberate trap. The campaign warns only about **certain** findings: the
+analysis works on the explored graph, and a component is uncertain when one
+of its states is incomplete or had a firing dropped by a place bound. An edge
+into an unexpanded state counts as an exit, so a component next to unexplored
+territory is not called terminal. `check` counts every finding; `explore`
+marks the uncertain ones "not certain: exploration was incomplete".
+
+For the campaign, each certain terminal cycle is a **livelock target** of its
+own. `--livelock-policy` defaults to `once`: seek a definite visit, then
+forbid the states. This is coverage of a known trap, not a verdict about the
+SUT; a run that enters the cycle and follows it is still doing exactly what
+the model allows. If the reachable graph is one strongly connected component
+and declares no target at all, the whole graph is one terminal cycle (the
+exception is a single dead state, which is the deadlock case) — which is why
+that warning is so common. An initial marking inside such a cycle gets its
+own warning: every run starts in the trap and cannot avoid it.
+
+**SUT livelock.** The run-time form is a judgement about one run: the SUT
+keeps producing events, but nothing in the run progresses. It is off by
+default because periodic behaviour can be legitimate. With
+`--livelock-timeout MS` greater than zero, and at least
+`--livelock-min-events` observed events (default 3) since the last progress,
+the run ends as `livelock`:
+
+```
+  run 1    livelock  315 events, 0 inputs, +2 states +2 edges  314 events over 400 ms without progress (no new state, no stimulus, no target marking)
+```
+
+Progress is one of four things: a stimulus was sent, the belief contains a
+state not seen earlier in the run, the belief may be in a target marking, or
+the SUT fell quiet. Only observed events count towards the window; a
+stimulus or a quiescence report resets it. The outcome is a failure exit (1),
+and `--dump-on-livelock` collects a post-mortem.
+
+A SUT livelock does **not** require a specification livelock. The SUT can
+refuse to take an exit that the model offers, spinning in a perfectly
+non-terminal SCC; the static analysis will say nothing about it, while the
+timeout notices. Conversely, a specification livelock does not force a
+`livelock` outcome: with the timeout off, every event can be legal, the run
+ends for some other reason — a run limit (`--max-events`), a stop, a
+deviation elsewhere — and the report never says `livelock`. The static
+finding and the run-time outcome answer different questions.
+
+The run-time test is a heuristic. It deliberately treats "the belief may be
+in a target marking" as progress, because a target is where the campaign
+wants to be — but only a target state in the *current belief* counts, not a
+target somewhere in the same SCC. A SUT looping among non-target states of a
+target-containing SCC can therefore still be flagged if it never actually
+reaches the target. And a slow but honest SUT can be declared stuck; choose
+the timeout longer than any legitimate autonomous activity (§12.6).
+
+**What an SCC means for the campaign.** Three questions decide everything,
+and they are independent: *is the component cyclic?*, *can it be left?*, and
+*does it contain a target marking?* A milestone never enters this test. In
+one sentence: a cyclic SCC is a livelock only when it is terminal and has no
+target marking; a target legitimizes it, a milestone does not, and a
+non-terminal SCC is never a livelock.
+
+| SCC | target inside? | static finding | consequence |
+|-----|----------------|----------------|-------------|
+| cyclic, has an exit | either | none — not terminal | an ordinary loop; the run-time watch may still flag a SUT that refuses the exit |
+| cyclic, terminal | no | specification livelock | warning; a certain one is a livelock target, sought once and then forbidden |
+| cyclic, terminal | yes | none — legitimate steady state | not a deadlock; a plain target does not end a run, an intentional one ends the campaign |
+| one state, no edge, nothing enabled | no, `Normal` | specification deadlock | deadlock target; a quiescent SUT there ends the run as `deadlock` |
+| one state, no edge, nothing enabled | target or error | none | a target is a legitimate end; an error is `error_reached`; neither is a deadlock |
+| one state, only a self-loop | no | specification livelock | not a deadlock (the self-loop is enabled); same livelock-target handling |
+
+**Targets.** A target marking inside a terminal cycle legitimizes the whole
+component: the model says being there is the point, so the cycle is a
+legitimate steady state and the static analysis stays silent. This is true
+for a plain target as well as an intentional one. The difference is only what
+happens in a run: a plain target never ends a run, while an intentional
+target ends the whole campaign when the SUT is *certainly* in it (§5). The
+static test does not care which; it asks whether a legitimate marking exists,
+not whether the campaign will stop there. The test is local: only a target
+state *inside* the component counts. A target elsewhere does not legitimize
+a terminal SCC, and if an edge leads there the component has an exit and is
+not terminal in the first place.
+
+Some consequences are easy to miss. First, a target state is never a
+deadlock, even with no outgoing edge, because `isDeadlock` requires kind
+`Normal`. Second, the run-time watch only sees a target that is possible
+*now*: being somewhere in a target-containing SCC does not suspend it. One
+edge case: if a marking matches both a target and an error, the error wins,
+so it does not legitimize anything.
+
+**Milestones.** A milestone is a **transition** annotation, not a marking:
+`"milestone": true` or a rank. A certain step through it deposits positive
+pheromone (1.5 × rank) around the belief, is listed in the run and coverage,
+and the run continues. It is a success on the way, never an end.
+
+Because the terminal-cycle test only asks for `StateKind::Target` among the
+component's states, a milestone **cannot** legitimize a terminal cycle. A
+targetless terminal cycle with a milestone in it is still a specification
+livelock: the warning stays, the campaign still treats it as a livelock
+target, and the milestone's attract deposit competes with that lesson. Once
+the livelock target is satisfied, its states are forbidden; by default the
+suggester will not plan into them, and an ant that arrives there dies, so
+the milestone's positive deposit does not win. If the loop is legitimate,
+declare a target marking in it — a milestone is not a substitute.
+
+A milestone in a **non-terminal** cycle is harmless in this respect: the
+component has an exit, so there is no livelock finding, and the milestone is
+an ordinary reward on the way. The run-time watch has no milestone category
+either: the first step into a new state counts as progress because the state
+is new, but looping over the same milestone states forever does not.
+
+**Internal cycles.** One more SCC consequence is optional. The
+`explore --internal-cycles` option also reports cycles made only of internal
+transitions (divergence: the system can spin without any visible progress).
+It is off by default because environment-like internal behaviour that
+toggles back and forth is legitimate in many models. These findings are not
+campaign livelock targets; they are a diagnostic. The ordinary terminal-cycle
+test still counts internal edges like any other edge.
+
+**Reading a report.** The short version:
+
+- `check` says "deadlocks: N": the model has ordinary states with no move. If
+  such a state is a legitimate end, declare a target marking there; otherwise
+  add the missing transition.
+- The `check` line "terminal cycles without a target marking (livelocks)"
+  counts above zero: decide whether the loop is a legitimate steady state.
+  If yes, put a **target marking** in it — a milestone is not enough. If no,
+  break the cycle or add the missing output or exit. An initial marking
+  inside it is urgent.
+- Run ends `deviation` with "no output arrived": the SUT stopped where the
+  model expected output. That is an SUT deadlock in the everyday sense, but
+  the report calls it a deviation.
+- Run ends `aborted` with "no event from the SUT": silence outlasted the idle
+  timeout before any quiescence verdict; infrastructure by classification.
+- Run ends `deadlock`: the SUT stopped exactly at a model deadlock; the model
+  agrees, and the run is failed there.
+- Run ends `livelock`: the SUT kept talking without progress long enough.
+  Check the timeout first — it is a heuristic. A static terminal cycle is a
+  likely place for it, but neither necessary nor sufficient.
+
 ---
 
 ## 7. The ant colony
@@ -702,7 +954,7 @@ Egge's text, verbatim:
 > Yet another feature, which can be optionally on or off: To each marking, add a list of truncated traces, each of which is called a T-list, from which we arrived to the marking. The length of the list is N. By default, N is 4. The Nth element of the T-list is a mini-hash created from the current trace. The (marking, T-list) pairs are now the basis for pheromone generation instead of mere markings.
 
 The quote keeps the word of its time; the feature is called **T-suffix**
-since v0.0.2, and this manual uses that name (`doku.md` §27 records the
+since v0.0.2, and this manual uses that name (`journal.md` §27 records the
 rename).
 
 In plain words: every marking now remembers *how you got there* — not the
@@ -768,7 +1020,7 @@ that route. The edge channels stay exactly as they were: the pairs are a
 finer layer *beside* them. And a continued campaign replays the recorded
 steps over the same cascade, so the rebuilt pair keys match the live ones.
 
-### 7.3 The carry-over — several rounds saved, merged, toned down
+### 7.3 The carry-over — several rounds saved, merged, toned down, optionally aged
 
 The feature as Egge phrased it (it arrived as a "Feature:" line; the
 sentence itself is verbatim):
@@ -809,6 +1061,46 @@ live; rebuilt into a continued campaign at the default 50 % it deposits
 1.5. Two restored runs of the same milestone merge to 1.5 + 1.5 = 3.0 —
 merged as before, each toned down.
 
+**Aging the merge.** The toned-down merge above freezes every deposit at its
+rebuilt strength. If the earlier runs are many, or the SUT has moved on, the
+old teaching should fade instead — but not everything should fade equally.
+`--evaporate-restored-pheromones` (default **off**) lets the rebuilt
+pheromone age once at every boundary between restored runs:
+
+- The order is chronological. Before the second restored run is replayed,
+  the teaching rebuilt from the first run ages once; before the third, the
+  teaching of the first two ages once; and so on. The newest restored run
+  therefore enters at full rebuilt strength, and an older run has faded by
+  one step for every later restored run.
+- The step is the colony's ordinary aging step: attract loses 10 %, repel
+  2 %, and a saturated edge loses its attract. `--restored-pheromones N`
+  still applies to every rebuilt deposit first; the merge aging is on top of
+  that factor.
+- **Matured findings are spared.** A target, error marking, deadlock or
+  livelock whose phase is `satisfied` (§5) has reached its "visited N
+  times" criterion. The pheromone deposits that lead into such a state —
+  the incoming edge channels and the `(marking, T-suffix)` pair entries —
+  do not evaporate. The direct way in keeps its lesson for later runs,
+  while the weaker back-propagated traces behind it still age. Saturation
+  is not evaporation: a saturated edge's attract is still wiped.
+- **What is not matured.** A milestone is a transition reward, not a target
+  with a visit count, so its attract ages normally unless it lies on the
+  way into a state that is itself matured. A crash experiment
+  that is still `seeking` is not `satisfied` either: its way in ages until
+  the experiment resolves. An error marking, deadlock, livelock or
+  intentional target marking is matured by its own policy count —
+  `once`, `until_covered`/`target_hits`, or `avoid` (count 0). Plain,
+  non-intentional target markings are idle states for the livelock
+  analysis, not campaign targets, and are not spared.
+
+With the switch off, the historical merge is unchanged: no aging happens
+between restored runs. The switch concerns only the merge. It does not
+change the live campaign's aging (`--evaporate-between-runs`, §7.4), and
+`report` keeps rebuilding the log without it. If the model's static
+analysis is enabled (`--no-analyze` is not given), a merge with this switch
+runs it before the restored runs, so terminal livelocks already have their
+target findings when maturation is checked.
+
 ### 7.4 Evaporation — per suggestion or at the run boundary
 
 The pheromone is not permanent. Every suggestion the tool makes ages the
@@ -827,7 +1119,7 @@ cover 586 edges when the colony ages per suggestion; with
 `--evaporate-between-runs` they crash **twice**, keep four runs productive
 and cover **777** edges.
 
-A sweep of the rate itself (`doku.md` §31) finds the same outcome from 0.005
+A sweep of the rate itself (`journal.md` §31) finds the same outcome from 0.005
 to 0.10 per suggestion on this benchmark: the fork is reached only about
 five suggestions after the lesson is laid, so the short interval survives
 even a fast decay, and the pair layer plus the safe route's attract protect
@@ -927,7 +1219,7 @@ Campaign shape:
 | option | default | meaning |
 |--------|---------|---------|
 | `--max-runs N` | 20 | runs per campaign |
-| `--max-events N` | 10000 | events per run (overflow aborts the run) |
+| `--max-events N` | 10000 | events per run; reaching it ends the run normally ("run length limit", §12.10) |
 | `--threshold N` | 1 | visits after which a state/edge counts as covered |
 | `--initial NAME` | all | start only from this initial marking; repeatable |
 | `--seed N` | 0 | seed for random tie-breaks; 0 = deterministic order; same seed reproduces a campaign |
@@ -971,6 +1263,7 @@ Guidance (the ant colony, §7):
 | `--flat-catastrophe` | off | catastrophe deposits stay flat instead of growing with the way in |
 | `--tsuffix N` | 0 (off) | the (marking, T-suffix) pair layer; list length 0..8 (§7.2) |
 | `--restored-pheromones N` | 50 | percent of the earlier rounds' pheromone strength a continued campaign starts with (§7.3) |
+| `--evaporate-restored-pheromones` | off | age the rebuilt teaching once between restored runs; deposits into matured targets and errors are spared (§7.3) |
 | `--goal-priority P` | the model's `strategy.goals`, else balanced | `balanced` \| `targets` \| `coverage` — whether targets and milestones or fresh coverage should win (§8.5) |
 | `--error-priority P` | the model's `strategy.errors`, else balanced | `balanced` \| `seek` \| `avoid` — how much risk on the way into an error is accepted and how hard a satisfied error is avoided (§8.5) |
 | `--evaporate-between-runs` | off | the ants still walk at every suggestion, but the pheromone ages once per finished run instead of at every suggestion (§7.4) |
@@ -1399,11 +1692,14 @@ Time  campaign 0.02 s, mean run 24 ms (longest 24 ms), 333.3 events/s
 `livelock_policy`, `satisfied_target_policy`, `dump_on_deviation`, `dump_on_deadlock`,
 `dump_on_livelock`, `tsuffix`, `restored_pheromones`, `crash_level`,
 `crash_attempts`, `crash_predictions`, `hook_timeout`, `hook_runs`,
-`strategy`, `evaporate_between_runs`, `time_budget_ms`, `hunt_rare`,
+`strategy`, `evaporate_between_runs`, `evaporate_restored_pheromones`,
+`time_budget_ms`, `hunt_rare`,
 `rare_transitions`, `overlap`, `time`.
 The `strategy` object names the effective priorities (`{"goals": "...",
 "errors": "..."}`); `evaporate_between_runs` says where the pheromone aged
-(§7.4); `time_budget_ms` is the configured budget (0 = none);
+(§7.4); `evaporate_restored_pheromones` says whether restored teaching aged
+between the restored runs and spared matured targets (§7.3);
+`time_budget_ms` is the configured budget (0 = none);
 `satisfied_target_policy` names the phase policy (§8.5); and every run
 carries `"budget_reached"` — true for the run the wall-clock budget cut
 short (§8.5). `hunt_rare` is the boolean campaign switch and
@@ -1612,8 +1908,9 @@ What the number is **not**:
 | **marking** | which places hold how many tokens; **initial**, **target** (§5), **error** (§6) are named kinds of it |
 | **reachability graph** | every state the model can be in and every way to get there (§3) |
 | **state / edge** | one reachable marking / one possible firing in that graph |
-| **deadlock** | a state where nothing can fire — stuck by definition (static: in the graph; run-time: the SUT goes silent there) |
-| **livelock** | a cycle without a legitimate exit — static (a terminal cycle) or run-time (busy without progress) |
+| **deadlock** | a state where nothing can fire — stuck by definition; the `deadlock` outcome needs the SUT to be silent at such an ordinary state (§6.5, §6.12) |
+| **livelock** | a cycle without a legitimate exit — static (a terminal cycle) or run-time (busy without progress); the `livelock` outcome is the run-time heuristic (§6.6, §6.12) |
+| **strongly connected component (SCC)** | a maximal set of graph states in which every state reaches every other; a terminal one has no edge leaving it (§6.12) |
 | **trace** | the ordered steps of one run (§4) |
 | **definite step** | a step the tool knows exactly (certain); ambiguous stretches are credited transition-wise only |
 | **run / campaign / round** | one encounter with the SUT / all runs of one invocation / one invocation (§4) |
@@ -1622,7 +1919,7 @@ What the number is **not**:
 | **coverage overlap (Jaccard)** | how much two coverages coincide: `|A ∩ B| / |A ∪ B|` per transition, state and edge set, presence only (§10.6) |
 | **novelty** | the colony's "unexplored smells interesting": each edge's weight carries `1/(1 + hits)`, and an ant at a state with an uncovered way out deposits 1.0 and ends its walk (§7.1) |
 | **target marking** | a situation the campaign seeks; **intentional** ones end the campaign successfully (§5) |
-| **target phase** | `seeking` while a target is still a goal; `satisfied` once its policy count is reached, after which its states are forbidden (§8.5) |
+| **target phase** | `seeking` while a target is still a goal; `satisfied` (matured, meaning its "visited N times" criterion is reached) once its policy count is reached, after which its states are forbidden (§8.5) |
 | **phase veto** | the suggester's default refusal to move into a satisfied target; `--satisfied-target-policy` relaxes it (§8.5) |
 | **nontarget region** | states from which no target marking is reachable — a repellent region (§5) |
 | **error marking / error transition** | a declared forbidden situation / step (§6.2, §6.3) |
@@ -1633,11 +1930,11 @@ What the number is **not**:
 | **ant colony** | the steering heuristic: virtual ants walk the graph and lay pheromone (§7.1) |
 | **pheromone** | attract/repel deposits on edges that steer later choices; evaporate; capped at `tauMax` |
 | **pheromone dump** | the colony written as JSON (`--dump-pheromone`), keyed by markings, transition ids and T-suffix elements — never by session-local edge ids (§10.5) |
-| **milestone** | a transition worth stepping on: deposits 1.5 × rank, never ends a run |
+| **milestone** | a transition worth stepping on: deposits 1.5 × rank, never ends a run, does not legitimize a terminal cycle (§6.12) |
 | **catastrophe** | the pheromone lesson of a found fault, priced by the way in (§6.10) |
 | **T-suffix** | the list of truncated traces (mini-hashes of the recent trace) an arrival carries; the (marking, T-suffix) pairs are a finer pheromone basis (§7.2) |
 | **suffix cascade** | the recurrence the T-suffix elements follow — element k hashes the trace's last k steps (§7.2) |
-| **carry-over** | the pheromone teaching of earlier rounds, rebuilt merged and toned down into a continued campaign (§7.3) |
+| **carry-over** | the pheromone teaching of earlier rounds, rebuilt merged and toned down into a continued campaign, optionally aged between the restored runs with matured findings spared (§7.3) |
 | **crash prediction** | a nondeterministic SUT crash declared in the model with its probable class; the campaign reproduces it until it is certain (§6.11) |
 | **attempt / crash (of the experiment)** | one definite visit of the predicted place while it seeks / one death attributed to it (§6.11) |
 | **credibility level** | how certainly the experiment may conclude "deterministic" — `--crash-level`, 0.95 (§6.11) |
@@ -1737,7 +2034,7 @@ half-life is about 34 suggestions; after 200 suggestions, 1.8 % is left
 The campaign repeats runs exactly because a run is short enough to be
 recoverable; evaporation is the second line of defence, not the first.
 
-The sweep behind the default (`doku.md` §31) moves the per-suggestion repel
+The sweep behind the default (`journal.md` §31) moves the per-suggestion repel
 rate from 0.005 to 0.10: every rate gives the same outcome on the benchmark
 — 3 crashes, 3 productive runs, about 586 covered edges — even where the
 nominal retention over a run falls to nothing. The reason is the timing:
@@ -1792,7 +2089,8 @@ by the model's rules; a human action that is not pinned by an observable
 output can move the SUT to a marking the pair layer did not predict, and
 the learned suffix then belongs to the wrong situation. Run-time livelock
 detection (`--livelock-timeout`) and the idle timeout are wall-clock
-judgements too: a slow but honest SUT can be declared stuck.
+judgements too: a slow but honest SUT can be declared stuck. §6.12 separates
+that run-time judgement from the static terminal-cycle finding.
 
 ### 12.7 The model must be right, and the strategy is a trade
 
@@ -1876,7 +2174,7 @@ is which shape buys more coverage. The benchmark in `tests/tst_comm10k.cpp`
 was built to answer it: four communicating machines over a ring of four
 binary channels, 24 places, 36 transitions, exactly 10,000 states and
 64,000 edges, four goals and four error states, run for ten minutes at 50,
-200, 800 and 3200 events per run on three seeds (`doku.md` §32).
+200, 800 and 3200 events per run on three seeds (`journal.md` §32).
 
 The answer is that run size is a weak lever: neither many tiny runs nor a
 few huge ones is better. On the mean of the three seeds:

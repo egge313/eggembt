@@ -1640,6 +1640,98 @@ static void testTheRebuildReplaysWhatTheRunTaught()
     }
 }
 
+// DeepSeek V4.1 Flash: merge-time evaporation (doku section 34). One branch
+// leads into an error marking with policy "once"; the other reaches a rank-2
+// milestone. Restoring the crash first matures the error, the later restored
+// runs then age the milestone but not the error's way in.
+static Net makeMergeEvaporationNet()
+{
+    NetBuilder b("merge-evaporation");
+    const auto s0 = b.place("s0");
+    const auto mid = b.place("mid");
+    const auto served = b.place("served");
+    const auto crash = b.place("crash");
+    const auto go = b.transition("go", TransitionKind::Controllable, "go");
+    const auto serve = b.transition("serve", TransitionKind::Observable, "serve");
+    const auto reset = b.transition("reset", TransitionKind::Controllable, "reset");
+    const auto c1 = b.transition("c1", TransitionKind::Controllable, "c1");
+    b.input(s0, go).output(go, mid);
+    b.input(mid, serve).output(serve, served);
+    b.input(served, reset).output(reset, s0);
+    b.input(s0, c1).output(c1, crash);
+    b.initial("start", {{s0, 1}});
+    b.targetMarking("idle", {{s0, 1}});
+    b.milestone(serve, 2);
+    ErrorOptions boom;
+    boom.policy = TargetPolicy::Once;
+    b.errorMarking("boom", {{crash, 1}}, MatchMode::Exact, boom);
+    return b.build();
+}
+
+static void testRestoredPheromonesAgeBetweenRuns()
+{
+    const Net net = makeMergeEvaporationNet();
+    const auto go = *net.findTransition("go");
+    const auto serve = *net.findTransition("serve");
+    const auto c1 = *net.findTransition("c1");
+
+    PersistedRun crashRun;
+    crashRun.initialMarking = "start";
+    crashRun.transitions = {"c1"};
+    crashRun.outcome = RunOutcome::SutCrashed;
+    crashRun.detail = "error marking 'boom': the SUT was crashed for a post-mortem";
+
+    PersistedRun milestoneRun;
+    milestoneRun.initialMarking = "start";
+    milestoneRun.transitions = {"go", "serve"};
+    milestoneRun.outcome = RunOutcome::Completed;
+    milestoneRun.detail = "coverage complete: everything is covered";
+
+    SessionConfig cfg = quick();
+    cfg.restoredPheromonePercent = 100;  // exact rebuilt amounts
+    cfg.ants.tsuffixLength = 4;          // the pair store follows the same rule
+    cfg.coverage.threshold = 1000;       // keep the milestone edge unsaturated, so its attract ages visibly
+    cfg.evaporateRestoredPheromones = true;
+
+    Session session(net, cfg);
+    CHECK(session.restore(crashRun).ok);
+    const StateId start = session.graph().initialStates().front();
+    const StateId crashState = session.graph().edge(*session.graph().findEdge(start, c1)).target;
+    TraceCascade crashTrace;
+    crashTrace.setLength(4);
+    crashTrace.push(stepHashOf(net.transitions[c1]));
+    CHECK(near(bestChannel(session, c1, /*repel=*/true), 3.75));
+    CHECK(near(session.ants().pairRepel(crashState, crashTrace), 3.75));
+
+    CHECK(session.restore(milestoneRun).ok);  // the boundary ages nothing that matured
+    const StateId mid = session.graph().edge(*session.graph().findEdge(start, go)).target;
+    const StateId served = session.graph().edge(*session.graph().findEdge(mid, serve)).target;
+    TraceCascade serveTrace;
+    serveTrace.setLength(4);
+    serveTrace.push(stepHashOf(net.transitions[go]));
+    serveTrace.push(stepHashOf(net.transitions[serve]));
+    CHECK(near(bestChannel(session, c1, true), 3.75));
+    CHECK(near(session.ants().pairRepel(crashState, crashTrace), 3.75));
+    CHECK(near(bestChannel(session, serve, false), 3.0));
+    CHECK(near(session.ants().pairAttract(served, serveTrace), 3.0));
+
+    CHECK(session.restore(milestoneRun).ok);  // one aging step, then the next deposit
+    CHECK(near(bestChannel(session, c1, true), 3.75));
+    CHECK(near(session.ants().pairRepel(crashState, crashTrace), 3.75));
+    CHECK(near(bestChannel(session, serve, false), 3.0 * 0.90 + 3.0));
+    CHECK(near(session.ants().pairAttract(served, serveTrace), 3.0 * 0.90 + 3.0));
+
+    // The default is the historical merge: nothing ages between restored runs.
+    SessionConfig untouched = cfg;
+    untouched.evaporateRestoredPheromones = false;
+    Session plain(net, untouched);
+    CHECK(plain.restore(crashRun).ok);
+    CHECK(plain.restore(milestoneRun).ok);
+    CHECK(plain.restore(milestoneRun).ok);
+    CHECK(near(bestChannel(plain, c1, true), 3.75));
+    CHECK(near(bestChannel(plain, serve, false), 6.0));
+}
+
 // GLM-5.3-Flash: the pair layer in the session (doku section 16). One run
 // whose first step is a milestone transition that is ALSO an error transition
 // with a crash post-mortem: the step is certainly credited (its arrival pair
@@ -2767,6 +2859,7 @@ int main()
         {"theCampaignMeasuresItsTime", testTheCampaignMeasuresItsTime},  // GLM-5.3-Flash
         {"aMilestoneStepIsRewarded", testAMilestoneStepIsRewarded},  // GLM-5.3-Flash
         {"theRebuildReplaysWhatTheRunTaught", testTheRebuildReplaysWhatTheRunTaught},  // GLM-5.3-Flash
+        {"restoredPheromonesAgeBetweenRuns", testRestoredPheromonesAgeBetweenRuns},  // DeepSeek V4.1 Flash
         {"thePairLayerFollowsTheRunAndTheRestore", testThePairLayerFollowsTheRunAndTheRestore},  // GLM-5.3-Flash
         {"theEnvironmentFeedCountsOffersAndTakes", testTheEnvironmentFeedCountsOffersAndTakes},  // GLM-5.3-Flash
         {"aPredictedCrashIsCertainAtFirstHit", testAPredictedCrashIsCertainAtFirstHit},  // GLM-5.3-Flash

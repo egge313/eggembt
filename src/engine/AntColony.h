@@ -207,8 +207,16 @@ public:
     // DeepSeek V4.1 Flash: ONE evaporation step of both channels and of the
     // (marking, T-suffix) pair store, plus the saturation rule. Session calls
     // it once per run when evaporation happens between runs instead of at
-    // every suggestion.
-    void age();
+    // every suggestion. With `spareMatureTargets` the evaporation is skipped
+    // for deposits that lead into a state the TargetBoard classifies as
+    // Forbidden -- a target, error, deadlock or livelock whose phase is
+    // Satisfied (its visited-N criterion is reached). Such a state's incoming
+    // edge channels keep their pheromone and its pair entries are not aged;
+    // the saturation rule still wipes the attract of a saturated edge. This
+    // is the merge-time exception for matured findings
+    // (--evaporate-restored-pheromones); the default ages everything, exactly
+    // as before.
+    void age(bool spareMatureTargets = false);
 
     // Back-propagating deposits, for the ants and for callers with their own
     // knowledge (e.g. a catastrophe seen in a real run).

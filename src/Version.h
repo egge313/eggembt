@@ -16,6 +16,11 @@
 // v0.0.4 (19 November 2026): rare transitions and the hunt (the "rare" model
 // key, --hunt-rare, dwells and attempt budgets, doku §30), plus the measured
 // evaporation plateau (doku §31).
+//
+// v0.0.5 (22 November 2026): merge-time evaporation of restored pheromone,
+// sparing matured targets and errors (journal §34). The rule for this file:
+// the version is the git branch name, and `main` is the exception because its
+// name is not a version.
 #pragma once
 
-#define EGGEMBT_VERSION "v0.0.4"
+#define EGGEMBT_VERSION "v0.0.5"

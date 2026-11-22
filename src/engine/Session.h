@@ -173,6 +173,19 @@ struct SessionConfig {
     // on the CLI.
     unsigned restoredPheromonePercent = 50;
 
+    // DeepSeek V4.1 Flash: let the rebuilt pheromone age while several runs are
+    // merged (--evaporate-restored-pheromones). Before each restored run after
+    // the first, the teaching already rebuilt from the earlier runs ages once
+    // with the colony's ordinary rates. Deposits that lead into a MATURED
+    // target -- a target, error, deadlock or livelock whose phase is Satisfied
+    // (TargetPhase) -- are spared, because that finding has already reached its
+    // visited-N criterion and its lesson should stay loud. Milestones are not
+    // matured targets and age normally; a still-sought crash experiment is
+    // Seeking, not Satisfied, so it ages too. The newest restored run enters at
+    // full rebuilt strength. Off preserves the historical merge: no aging at
+    // all between restored runs.
+    bool evaporateRestoredPheromones = false;
+
     std::chrono::milliseconds poll{20};                  // how long to wait for events per loop
     std::chrono::milliseconds idleTimeout{10000};        // no event while waiting: abort (0: never)
     std::chrono::milliseconds stimulusAckTimeout{5000};  // an input never reported back: abort (0: never)

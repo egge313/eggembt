@@ -376,26 +376,52 @@ void AntColony::iterate(const std::vector<StateId> &starts, bool evaporate)
         age();
 }
 
-void AntColony::age()
+void AntColony::age(bool spareMatureTargets)
 {
-    // Evaporation, then saturated edges lose their attraction.
+    // Evaporation, then saturated edges lose their attraction. A matured
+    // target's way in is exempt from the evaporation (DeepSeek V4.1 Flash):
+    // its phase is Satisfied, so the finding has reached its visited-N
+    // criterion and the lesson should outlive the merge. The board is the
+    // same source the ants and the suggester read; refreshing it here keeps
+    // the exception aligned with the live target phases.
     ensure();
+    std::vector<char> spared;
+    if (spareMatureTargets && rg_.numStates() > 0) {
+        board_.refresh();
+        spared.assign(rg_.numStates(), 0);
+        for (StateId s = 0; s < rg_.numStates(); ++s)
+            spared[s] = board_.classOf(s) == TargetBoard::StateClass::Forbidden ? 1 : 0;
+    }
+    const auto isSparedEdge = [&](EdgeId e) {
+        if (spared.empty())
+            return false;
+        const StateId target = rg_.edge(e).target;
+        return target < spared.size() && spared[target] != 0;
+    };
+
     const auto keepAttract = static_cast<float>(1.0 - cfg_.evaporationAttract);
     const auto keepRepel = static_cast<float>(1.0 - cfg_.evaporationRepel);
     for (std::size_t e = 0; e < attract_.size(); ++e) {
-        attract_[e] *= keepAttract;
-        repel_[e] *= keepRepel;
+        // Saturation is a coverage rule, not evaporation: even a spared way in
+        // loses its attraction once the edge is covered to the threshold.
         if (db_.isSaturatedEdge(static_cast<EdgeId>(e)))
             attract_[e] = 0.0f;
+        if (isSparedEdge(static_cast<EdgeId>(e)))
+            continue;
+        attract_[e] *= keepAttract;
+        repel_[e] *= keepRepel;
     }
     // GLM-5.3-Flash: the pair store evaporates with the same per-iteration
     // rates as the edge channels (doku section 16); an entry whose both
-    // channels fell below the floor is pruned.
+    // channels fell below the floor is pruned. A pair at a matured target is
+    // spared for the same reason its incoming edges are.
     if (!pairs_.empty()) {
         constexpr double kPairFloor = 1e-4;
         for (auto it = pairs_.begin(); it != pairs_.end();) {
-            it->second.attract = static_cast<float>(it->second.attract * keepAttract);
-            it->second.repel = static_cast<float>(it->second.repel * keepRepel);
+            if (spared.empty() || it->first.state >= spared.size() || spared[it->first.state] == 0) {
+                it->second.attract = static_cast<float>(it->second.attract * keepAttract);
+                it->second.repel = static_cast<float>(it->second.repel * keepRepel);
+            }
             if (it->second.attract < kPairFloor && it->second.repel < kPairFloor)
                 it = pairs_.erase(it);
             else

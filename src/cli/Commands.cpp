@@ -379,6 +379,11 @@ static void printCommandHelp(std::ostream &out, const std::string &command)
             << "                          when continuing from a run log, start with N percent of\n"
             << "                          the earlier rounds' pheromone strength (default 50;\n"
             << "                          100 = full strength, 0 = ignore their teaching)\n"
+            // DeepSeek V4.1 Flash: merge-time evaporation for restored runs.
+            << "    --evaporate-restored-pheromones\n"
+            << "                          when continuing from a run log, age the rebuilt\n"
+            << "                          pheromone once between restored runs; deposits into\n"
+            << "                          matured targets and errors are spared (default off)\n"
             // DeepSeek V4.1 Flash: the testing strategy (doku section 27).
             << "    --goal-priority P     balanced | targets | coverage: whether fresh coverage and\n"
             << "                          targets matter equally, targets and milestones matter more,\n"
@@ -1209,7 +1214,7 @@ int cmdRun(const std::vector<std::string> &argv, std::ostream &stdoutStream, std
     addSimSpec(spec);
     spec.flags.insert({"simulate", "stdio", "no-ants", "no-analyze", "require-complete", "strict",
                        "flat-catastrophe", "sync-events", "coverage-elements",
-                       "evaporate-between-runs", "hunt-rare"});  // DeepSeek V4.1 Flash
+                       "evaporate-between-runs", "evaporate-restored-pheromones", "hunt-rare"});  // DeepSeek V4.1 Flash
     spec.valued.insert({"agent", "connect", "listen", "accept-timeout", "hello-timeout", "max-runs", "max-events",
                         "quiescence", "livelock-timeout", "livelock-min-events", "idle-timeout", "ack-timeout", "poll",
                         "threshold", "initial", "seed", "ant-seed", "max-states", "deadlock-policy", "livelock-policy",
@@ -1313,6 +1318,9 @@ int cmdRun(const std::vector<std::string> &argv, std::ostream &stdoutStream, std
     // DeepSeek V4.1 Flash: evaporate the pheromone at run boundaries instead
     // of at every suggestion (doku section 27).
     cfg.evaporateBetweenRuns = args.has("evaporate-between-runs");
+    // DeepSeek V4.1 Flash: age the rebuilt teaching between restored runs,
+    // sparing matured targets and errors (doku section 34).
+    cfg.evaporateRestoredPheromones = args.has("evaporate-restored-pheromones");
     // DeepSeek V4.1 Flash: hunt the model's rare transitions (doku section 30).
     cfg.huntRare = args.has("hunt-rare");
 
@@ -1567,6 +1575,13 @@ int cmdRun(const std::vector<std::string> &argv, std::ostream &stdoutStream, std
             << ", errors " << toString(sessionCfg.errorPriority.value_or(ErrorPriority::Balanced)) << "\n";
     log.out << "  evaporation: "
             << (sessionCfg.evaporateBetweenRuns ? "between runs (--evaporate-between-runs)" : "per suggestion")
+            << "\n";
+    // DeepSeek V4.1 Flash: how much of the earlier runs' teaching was merged,
+    // and whether it aged between the restored runs (doku sections 16 and 34).
+    log.out << "  restored pheromones: " << sessionCfg.restoredPheromonePercent << "%; merge evaporation: "
+            << (sessionCfg.evaporateRestoredPheromones
+                    ? "between restored runs, matured targets spared"
+                    : "off")
             << "\n";
 
     // DeepSeek V4.1 Flash: the rare hunt (doku section 30): how many of the

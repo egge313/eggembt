@@ -100,7 +100,7 @@ The ant-colony guidance can be switched off per campaign:
 - `docs/PLUGIN_PROTOCOL.md` written: the full wire protocol between `eggembt run`
   and an agent — field tables for all ten message types, an example run, a
   checklist for agent authors, and where the code lives. Closes the reference
-  in §8 of `doku.md` and in `Protocol.h` / `AgentServer.h`.
+  in §8 of `journal.md` and in `Protocol.h` / `AgentServer.h`.
 - Build hardening: warnings enabled (`-Wall -Wextra`) as the design doc
   promises; the tree compiles clean with them.
 
@@ -389,7 +389,7 @@ path for each of the three components (ATM, session, database).
   swallowed card satisfied, the good target at run 37, the ATMs rotate
   13/12/12. (`SimulatedSut` reseeds per run with consecutive seeds, whose
   early draws skew slightly — everything is still found, just in ~37–58 runs
-  instead of fewer; documented in `doku.md` §13.)
+  instead of fewer; documented in `journal.md` §13.)
 
 Try it:
 
@@ -403,7 +403,7 @@ entries — 13 unit suites plus `cli_test.sh` (27 scenarios) — all green.
 
 Five things in one batch — the **milestone label** plus §12 items 3, 4, 6 and
 7 of the design doc (each documented with the item quoted verbatim in
-`doku.md` §14):
+`journal.md` §14):
 
 **Milestones.** A transition can be tagged `"milestone": true` or, ranked,
 `"milestone": 2` (`Transition::milestone` / `milestoneRank`,
@@ -475,7 +475,7 @@ The suite stands at **15 CTest entries** — 14 unit suites plus `cli_test.sh`
 ### GLM-5.3-Flash — backtraces in the report, the nontarget region
 
 Two closures that end §12 (both documented with the item quoted verbatim in
-`doku.md` §15):
+`journal.md` §15):
 
 **Backtraces in `eggembt report`** (§12 item 2). The GUI half of the item was
 scratched by decision — *"a textual report is fine"* — so the coverage-and-
@@ -509,7 +509,7 @@ all green.
 
 ### GLM-5.3-Flash — `target` instead of `final`, T-list pairs, and toned-down carry-over
 
-Three things in one batch, documented in full in `doku.md` §16:
+Three things in one batch, documented in full in `journal.md` §16:
 
 **The rename.** "Final marking" reads like net-theory's final state, but the
 concept is the tester's *target* — so `final`/`nofinal` became
@@ -549,7 +549,7 @@ The suite stands at **15 CTest entries** — 14 unit suites (`tst_ants` now
 
 ### GLM-5.3-Flash — crash predictions, and the `--credits` command
 
-**Crash predictions** (documented in full in `doku.md` §17). A
+**Crash predictions** (documented in full in `journal.md` §17). A
 *nondeterministic* SUT crash — random, rare, sometimes, often, but not always
 — is a bug, so the campaign now treats a crash as a **target**: it reproduces
 it, counting attempts (definite visits of the predicted place) and crashes
@@ -593,7 +593,7 @@ all green.
 
 ### GLM-5.3-Flash — command hooks
 
-**Command hooks** (documented in full in `doku.md` §18; user manual §9). A
+**Command hooks** (documented in full in `journal.md` §18; user manual §9). A
 transition can carry a shell command that runs when its step is certainly
 fired — `"command": "collect.sh"`, or an object with `run`, `mode`
 (`"sync"`/`"async"`), `times` (a whole-campaign budget, `1` = once) and
@@ -633,7 +633,7 @@ are written as `"format":"eggembt-runlog"` and still read `"mbt-runlog"`. The
 internal library targets `mbt_engine`/`mbt_core`/`mbt_agent` and the macro
 `MBT_POSIX_IO` keep their names on purpose.
 
-**Synchronized events** (documented in full in `doku.md` §19; user manual
+**Synchronized events** (documented in full in `journal.md` §19; user manual
 §2.3, §8.3). A model can mark a transition of the SUT's own moves with
 `"sync": true` (observable, or traced internal — controllable transitions are
 rejected, their stimulus is acknowledged already). With the campaign switch
@@ -663,7 +663,7 @@ The suite stands at **16 CTest entries** — 15 unit suites (`tst_session`
 
 ### DeepSeek V4.1 Flash — inspecting a campaign afterwards
 
-**Three views of the record, one drawing** (documented in `doku.md` §21; user
+**Three views of the record, one drawing** (documented in `journal.md` §21; user
 manual §8.3, §10.5). `report --runs` lists every run's recorded steps, a long
 one keeping its last 20 and saying `[N steps]`; `report --trace N` prints one
 run in full with its detail. Both read the log's own steps — an event run shows
@@ -720,7 +720,7 @@ milestone 1.5 × rank, catastrophe 3.0 × (1 + 0.25 · min(stimuli, 8)), static
 region repel 1.0, saturation. The manual's command list gained the `credits`
 line the help has carried since the rename.
 
-**Jaccard's index, verbatim** (user manual §10.6; `doku.md` §22). For two sets
+**Jaccard's index, verbatim** (user manual §10.6; `journal.md` §22). For two sets
 of covered elements, `J(A, B) = |A ∩ B| / |A ∪ B| = |A ∩ B| / (|A| + |B| −
 |A ∩ B|)`, computed separately for transitions, states and edges. The sets are
 the elements a run *definitely* touched — states visited (initial state
@@ -738,7 +738,7 @@ not frequency- or order-aware; the console rounds, `--csv`/`--json` are exact.
 ### DeepSeek V4.1 Flash — v0.0.2: PNML export, a testing strategy, a budget, and evaporation at the run boundary
 
 **PNML export** (`eggembt export MODEL [--output FILE] [--strict]`; user
-manual §8.6, `doku.md` §27). The model is written as standard PNML
+manual §8.6, `journal.md` §27). The model is written as standard PNML
 (ISO/IEC 15909-2): places, transitions, normal and inhibitor arcs with their
 weights, and the **first** initial marking. The eggembt conventions the PNML
 loader understands — transition kind, label, milestone rank — are written as
@@ -785,7 +785,7 @@ aging, one `age()` at 98 %, and the old 1.8 % after 200 per-suggestion
 agings. The campaign report names the boundary, and the JSON carries
 `evaporate_between_runs`.
 
-**The limits of the approach** (user manual §12, `doku.md` §27). The new
+**The limits of the approach** (user manual §12, `journal.md` §27). The new
 chapter documents the measured failure modes: edge-channel saturation and a
 sought target outshouting the catastrophe repel (on the benchmark, ants
 without the T-suffix pair layer are exactly as good as no ants); the pair
@@ -797,7 +797,7 @@ unpredictability; and the strategy's deliberate trade-offs.
 **T-suffix, not T-list.** The feature and every live name around it were
 renamed: `TSuffix.h`, `kMaxTSuffix`, `tsuffixLength`, the `tsuffix` JSON key,
 the `--tsuffix` switch, the user manual and `docs/`. Historical changelog
-entries (this file, `doku.md` §§16, 21, 25) keep the word as it was written
+entries (this file, `journal.md` §§16, 21, 25) keep the word as it was written
 then, and Egge's own quoted text keeps it with a note. No behaviour changed.
 
 The suite stands at **18 CTest entries** — 17 unit suites (288 tests;
@@ -808,7 +808,7 @@ The suite stands at **18 CTest entries** — 17 unit suites (288 tests;
 ### DeepSeek V4.1 Flash — v0.0.3: the satisfied-target phase policy
 
 `--satisfied-target-policy veto|penalise|ignore` (user manual §8.5,
-`doku.md` §28). Every target is `seeking` while it is still a goal and
+`journal.md` §28). Every target is `seeking` while it is still a goal and
 `satisfied` once its policy count is reached; its states are then forbidden.
 The default, `veto`, keeps the historical rule: the suggester never chooses
 a move into a satisfied target and plans route around it. `penalise` allows
@@ -869,7 +869,7 @@ JSON always carries `hunt_rare` and `rare_transitions` with `transition`,
 `label`, `p`, `attempts`, `wait_for_ms`, `seen` and `attempts_used`. The
 PNML export keeps the contract in the transition comment and annotation.
 
-The third pheromone benchmark now sweeps the evaporation rates (`doku.md`
+The third pheromone benchmark now sweeps the evaporation rates (`journal.md`
 §31): the per-suggestion repel rate from 0.005 to 0.10 gives the same
 outcome on the 1000-state diamond (3 crashes, 3 productive runs, about 586
 edges), because the fork is reached about five suggestions after the
@@ -888,10 +888,46 @@ ones. The only monotonic signal was per event — 0.918 new edges at 50 events
 per run up to 0.972 at 3200 — because every short run re-tests its initial
 region. A middle range (a few hundred to a few thousand events per run) is a
 sensible place to start; `--max-events 10000` is a safety cap, not a
-coverage target. `doku.md` §32 has the table and `tst_comm10k --long` runs
+coverage target. `journal.md` §32 has the table and `tst_comm10k --long` runs
 the four campaigns.
 
 The suite stands at **19 CTest entries** — 18 unit suites (298 tests;
 `tst_pnml` 24, `tst_jsonnetloader` 45, `tst_session` 58, `tst_suggest` 21,
 `tst_ants` 23, `tst_pheromone` 3, `tst_comm10k` 1) plus `cli_test.sh` (41
 scenarios, +`rare`) — all green. `eggembt version` prints `v0.0.4`.
+
+### DeepSeek V4.1 Flash — v0.0.5: merge-time evaporation for restored runs
+
+When a campaign continues from a run log, the earlier runs' pheromone
+teaching is rebuilt and merged (§16). It normally enters frozen at
+`--restored-pheromones` percent. `--evaporate-restored-pheromones` (default
+off) lets it age instead: before each restored run after the first, the
+teaching rebuilt so far ages once with the colony's ordinary rates (attract
+10 %, repel 2 %, saturated attract wiped). The newest restored run therefore
+enters at full rebuilt strength, and older runs fade by one step for every
+later restored run.
+
+The exception is a **matured finding**. A target, error marking, deadlock or
+livelock whose phase is `satisfied` (its `once` / `until_covered` /
+`target_hits` criterion is reached; `avoid` makes the count 0) is spared:
+the edge channels into that state and its `(marking, T-suffix)` pair entries
+do not evaporate. Milestones are transition rewards without a visit count
+and do not mature; their attract ages normally unless the milestone's
+destination state is itself matured, in which case the edge is spared by the
+destination rule. A crash experiment still `seeking` is not matured.
+Saturation remains a coverage rule, not evaporation: a saturated edge still
+loses its attract. With `--no-analyze` the static livelock findings are
+absent; otherwise the analysis runs before the restored runs so terminal
+livelocks are known when maturation is checked.
+
+The console `Guidance` block prints `restored pheromones: N%; merge
+evaporation: off` or `between restored runs, matured targets spared`, and
+the campaign JSON always carries `evaporate_restored_pheromones`. The exact
+merge arithmetic is pinned in `tst_session` (`restoredPheromonesAgeBetweenRuns`)
+and the sparing in `tst_ants` (`maturedTargetsAreSparedByMergeEvaporation`).
+
+The suite stands at **19 CTest entries** — 18 unit suites (300 tests;
+`tst_pnml` 24, `tst_jsonnetloader` 45, `tst_session` 59, `tst_suggest` 21,
+`tst_ants` 24, `tst_pheromone` 3, `tst_comm10k` 1) plus `cli_test.sh` (42
+scenarios, +`evaporate-restored-pheromones`) — all green. `eggembt version`
+prints `v0.0.5`.

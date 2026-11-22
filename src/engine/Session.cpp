@@ -188,6 +188,19 @@ const LivelockReport &Session::analyzeModel()
 
 ReplayResult Session::restore(const PersistedRun &run)
 {
+    // DeepSeek V4.1 Flash: merge-time evaporation (--evaporate-restored-
+    // pheromones). This run is the next boundary: age the teaching the earlier
+    // restored runs left before the current run adds its own. The matured
+    // targets are read from the coverage merged so far, so a finding matures
+    // exactly when its run is restored -- its later ages are the spared ones,
+    // and the newest restored run enters at full rebuilt strength. Off (the
+    // default) leaves the historical merge untouched. The static analysis runs
+    // first when the campaign asks for it, so a terminal livelock already has
+    // its target finding before the board decides what is matured.
+    if (cfg_.evaporateRestoredPheromones && cfg_.analyzeModel && !analyzed_)
+        analyzeModel();
+    if (cfg_.useAnts && cfg_.evaporateRestoredPheromones && db_.numRuns() > 0)
+        ants_.age(/*spareMatureTargets=*/true);
     const ReplayResult result = replay(db_, rg_, run, cfg_.tracker);
     // GLM-5.3-Flash: continue the crash experiments in the recorded order
     // (before the pheromone rebuild, whose seek/catastrophe choice reads the
