@@ -186,7 +186,7 @@ static void testDeadlockPolicies()
     }
 }
 
-// s0 -trap-> q <-> r (terminal cycle), s0 -safe-> s1 -back-> s0
+// s0 -cycle-> q <-> r (terminal cycle), s0 -safe-> s1 -back-> s0
 static Net makeLivelockNet()
 {
     NetBuilder b;
@@ -194,12 +194,12 @@ static Net makeLivelockNet()
     const auto s1 = b.place("s1");
     const auto q = b.place("q");
     const auto r = b.place("r");
-    const auto trap = b.transition("trap", TransitionKind::Controllable, "trap");
+    const auto cycle = b.transition("cycle", TransitionKind::Controllable, "cycle");
     const auto u = b.transition("u", TransitionKind::Observable, "u");
     const auto v = b.transition("v", TransitionKind::Observable, "v");
     const auto safe = b.transition("safe", TransitionKind::Controllable, "safe");
     const auto back = b.transition("back", TransitionKind::Observable, "back");
-    b.input(s0, trap).output(trap, q);
+    b.input(s0, cycle).output(cycle, q);
     b.input(q, u).output(u, r);
     b.input(r, v).output(v, q);
     b.input(s0, safe).output(safe, s1);
@@ -228,7 +228,7 @@ static void testLivelockPhases()
     CHECK(board.classOf(q) == TargetBoard::StateClass::Seeking);
     CHECK(board.classOf(r) == TargetBoard::StateClass::Seeking);
 
-    pathRun(db, rg, 0, {"trap", "u"});  // visits q and r
+    pathRun(db, rg, 0, {"cycle", "u"});  // visits q and r
     board.refresh();
     CHECK(board.livelock(0).phase == TargetPhase::Satisfied);
     CHECK(board.forbidden(q) && board.forbidden(r));
@@ -423,14 +423,14 @@ static void testAvoidsASatisfiedLivelock()
     Suggester sg(rg, db);
     sg.setLivelockFindings(analyzeLivelocks(rg).findings);
 
-    pathRun(db, rg, 0, {"trap", "u", "v"});  // the livelock has been confirmed once
+    pathRun(db, rg, 0, {"cycle", "u", "v"});  // the livelock has been confirmed once
     pathRun(db, rg, 0, {"safe"});            // "back" is still uncovered
 
     BeliefTracker tr(rg, &db);
     tr.beginRun(0);
     const Suggestion s = sg.suggest(tr);
     CHECK(s.status == SuggestionStatus::Suggest && s.label == "safe");
-    CHECK((s.vetoed == std::vector<std::string>{"trap"}));
+    CHECK((s.vetoed == std::vector<std::string>{"cycle"}));
     CHECK(s.steps == 2);  // safe, then the uncovered "back"
     tr.endRun(RunOutcome::Completed);
 }

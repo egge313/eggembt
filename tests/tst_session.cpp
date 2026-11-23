@@ -891,18 +891,18 @@ static void testAModelWithoutAnIdleStateIsFlagged()
 
 static void testStaticLivelocksBecomeTargets()
 {
-    // s0 -trap-> q <-> r (a cycle that cannot be left), s0 -safe-> s1 -back-> s0.
+    // s0 -cycle-> q <-> r (a cycle that cannot be left), s0 -safe-> s1 -back-> s0.
     NetBuilder b;
     const auto s0 = b.place("s0");
     const auto s1 = b.place("s1");
     const auto q = b.place("q");
     const auto r = b.place("r");
-    const auto trap = b.transition("trap", TransitionKind::Controllable, "trap");
+    const auto cycle = b.transition("cycle", TransitionKind::Controllable, "cycle");
     const auto u = b.transition("u", TransitionKind::Observable, "u");
     const auto v = b.transition("v", TransitionKind::Observable, "v");
     const auto safe = b.transition("safe", TransitionKind::Controllable, "safe");
     const auto back = b.transition("back", TransitionKind::Observable, "back");
-    b.input(s0, trap).output(trap, q);
+    b.input(s0, cycle).output(cycle, q);
     b.input(q, u).output(u, r);
     b.input(r, v).output(v, q);
     b.input(s0, safe).output(safe, s1);

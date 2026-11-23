@@ -2495,3 +2495,213 @@ The full suite is still **19 CTest entries**, 18 unit suites (300 tests) and
 branch of the same name (`main` is the one exception: its name is not a
 version). The design record itself was renamed `doku.md` → `journal.md` in
 this batch.
+
+## 35. Open item: temporal logic over places (23 November 2026, DeepSeek V4.1 Flash)
+
+Not implemented. Recorded as the next open item, at Egge's suggestion:
+
+> How about adding temporal logic to the specification, where the places act as predicates? E.g. You could express things like p1 IMPLIES EVENTUALLY p2 AND ALWAYS p3.
+
+### Why it fits
+
+A marking is already a valuation of every place: a place is either marked
+(one or more tokens) or not. The reachability graph is therefore a Kripke
+structure whose states are markings and whose edges are transition firings,
+and the existing target board already reads state predicates (`StateKind`,
+error markings, target markings, deadlocks, terminal cycles). What is missing
+is a way to say how those predicates relate **over time**: an ordering, a
+response obligation, an invariant, a recurrence.
+
+The places-as-predicates reading gives a small, natural language:
+
+- `p` — place `p` holds at least one token in the current marking;
+- `p >= n` — later, if token counts are wanted;
+- `AND`, `OR`, `NOT`, `IMPLIES` — the usual Boolean connectives;
+- `ALWAYS φ` (`G φ`), `EVENTUALLY φ` (`F φ`), `NEXT φ` (`X φ`),
+  `φ UNTIL ψ` (`φ U ψ`).
+
+Egge's formula should be written with parentheses, because its two readings
+differ: `p1 -> (F p2 AND G p3)` says "whenever `p1` holds, `p2` must come
+later and `p3` must hold forever", while `(p1 -> F p2) AND G p3` makes
+`ALWAYS p3` unconditional. A model format should accept both spellings
+(`IMPLIES`/`->`, `EVENTUALLY`/`F`, `ALWAYS`/`G`) and print the parsed form
+back, as the rest of the loader does.
+
+The patterns users actually ask for map onto this directly:
+
+| pattern | formula | meaning |
+| ------- | ------- | ------- |
+| invariant | `G NOT bad` | `bad` is never marked |
+| reachability | `F done` | some run reaches `done` |
+| response | `G (request IMPLIES F grant)` | every request is eventually granted |
+| recurrence | `G (F tick)` | `tick` happens again and again |
+| until | `pending U done` | `pending` holds until `done` |
+
+### Semantics that must be fixed before code
+
+1. **Universal or existential?** A requirement ("every run must grant every
+   request") is universal; a test goal ("find a run that reaches `done`") is
+   existential. The same syntax should not silently mean both. A `kind` field
+   (`require`, `forbid`, `seek`) can choose the reading.
+2. **Finite runs.** LTL is usually defined over infinite paths. A test run
+   ends, so the choice is finite-trace LTL (`LTLf`) or infinite LTL with the
+   final state stuttered forever. The difference matters for `F` and `G` at
+   the end of a run and must be documented once, not per property.
+3. **Per run or per campaign?** "Eventually" across a campaign that restarts
+   the SUT is a different claim from "eventually within one run". The default
+   should be per run; a campaign-scoped variant can be added deliberately.
+4. **Ambiguous belief.** The tracker often has several possible markings.
+   Evaluation should be three-valued: true if true in every possible state,
+   false if false in every one, unknown otherwise. Only a definite false
+   should fail a `require`/`forbid` property; `unknown` is reported, not
+   invented into a bug.
+5. **Fairness.** `G (F tick)` over an infinite model path needs a fairness
+   assumption (which transitions may be ignored forever). Without it the
+   checker reports schedules no real tester would choose. Finite-run
+   monitoring avoids the question but cannot prove the property.
+6. **Relationship to today's targets.** An intentional target marking is
+   roughly `F target`; an invariant is roughly an error marking with zero
+   permitted hits. Temporal properties should complement the existing
+   target/error/milestone machinery, not silently replace its policies. A
+   formula can become a goal (`seek`), a veto (`forbid`), or a pure report.
+
+### Two implementation levels
+
+**Runtime monitor (the small first step).** Evaluate the formula on the
+observed events and the belief after every step. A definite violation ends
+the run with a new outcome (`property_violated`, distinct from `deviation`),
+names the property and the trace prefix, and appears in the console, the run
+log and JSON. This needs no product automaton and fits the existing
+BeliefTracker; it catches safety violations and missed responses on the
+executed path, but it cannot prove that an unexecuted path would violate.
+
+**Static model checking (the expensive step).** Build the product of the
+reachability graph with a Büchi automaton for the negated formula (or use CTL
+fixed points for the universal/existential fragment), search for a violating
+path or a witness, and report the counterexample as markings and transitions.
+The graph is lazy and can be cut by `--max-states`, so the result must say
+"no violation found within the explored graph", not "proved". Liveness adds
+the fairness assumptions above.
+
+**Guidance (the payoff).** Once a property is a goal, the suggester can steer
+toward its obligations: `F p` becomes a target, `G NOT p` becomes a
+forbidden state, and `request IMPLIES F grant` becomes a response obligation
+(do not keep a grant owed forever). This reuses the target board, the
+pheromone deposits and the milestone reward rather than inventing a second
+guidance system.
+
+### A possible first increment
+
+- Places only, with `p` meaning "marked"; token-count atoms later.
+- `G`, `F`, `X`, `U`, `AND`, `OR`, `NOT`, `IMPLIES`, with parentheses.
+- `kind: require | forbid | seek`; per-run semantics; three-valued
+  evaluation over the belief.
+- Runtime monitor first, with counterexample prefix and a new outcome; a
+  static search for `require`/`forbid` only when the formula is a safety
+  property (no `F` under `G`), so no fairness question arises.
+- A model key such as:
+
+```json
+{"properties": [
+  {"name": "grant", "kind": "require", "formula": "G (request IMPLIES F grant)"},
+  {"name": "no-overflow", "kind": "forbid", "formula": "G NOT overflow"},
+  {"name": "served-once", "kind": "seek", "formula": "F served"}
+]}
+```
+
+Open questions for the next design pass: operator precedence and printing,
+whether formulas may mention transitions as well as places, bounded versions
+(`F<=N p`) for test campaigns, whether a violated `require` exits 1 like a
+deviation or gets its own exit code, and how a temporal goal interacts with
+a still-sought error when both call for the same next input.
+
+The point of the item is not to replace the model: it is to let the model say
+*when* a place fact matters, so a specification can express a protocol
+obligation directly instead of encoding it as a hand-built target marking.
+
+## 36. Rename: `nontarget` → `off-target` (23 November 2026, DeepSeek V4.1 Flash)
+
+Egge asked for the term to be replaced everywhere:
+
+> Replace nontarget by off-target everywhere in code and documentation. What we mean is off-target and off-target region.
+
+### What changed
+
+The concept, its computation and every number are unchanged; only the name moved. In code:
+
+- `AntConfig::nontargetRepel` → `AntConfig::offTargetRepel` (still 1.0, `0` = off);
+- `AntColony::refreshNontargetRegionIfGrown` → `AntColony::refreshOffTargetRegionIfGrown`
+  (called from `iterate()` exactly as before);
+- comments, doc comments and the two test comments in `tests/tst_ants.cpp` and
+  `tests/tst_pheromone.cpp` now say **off-target region**;
+- the query API `AntColony::region(EdgeId)`, the `region_` array, the CLI, the
+  model format and every output string keep their names and text — the field
+  was never exposed as a model key or a command-line switch.
+
+In the living documentation, `userdoc.md` §5 (the target complement), §7.1
+(the weight formula) and the glossary now say **off-target region**, and
+`README.md`'s region section names `offTargetRepel` and the **off-target
+region**. Egge's original wording in the quoted §12 item — *"states from which
+no final marking is reachable as a further repellent region"* — is a quotation
+and stays verbatim; the sentence introducing it now says the concept is spelled
+"off-target".
+
+Historical journal sections keep the old spelling by the append-only rule.
+The identifier chain is now:
+
+    noFinalRepel → nontargetRepel → offTargetRepel
+    refreshNoFinalRegionIfGrown → refreshNontargetRegionIfGrown → refreshOffTargetRegionIfGrown
+
+so §16 remains readable as the record of the first rename without pretending
+it used today's word.
+
+### Verification
+
+The full suite is unchanged: **19 CTest entries**, 18 unit suites (300 tests)
+and 42 CLI scenarios, all green. Nothing in the wire protocol, the run log or
+the campaign JSON changed, so `v0.0.6` stays the product version.
+
+## 37. Publication: a formal account of the nets and the colony (23 November 2026, DeepSeek V4.1 Flash)
+
+Egge asked for a publication, preferably in LaTeX, with mathematical
+definitions of the project's Petri nets and ant-colony approach:
+
+> Create a new directory and file for a publication, preferably written in LaTeX. Can you obtain a mathematical definition of our kind of Petri nets and our ACO approach?
+
+### What was added
+
+A new tracked directory `publication/`:
+
+- `main.tex` — a self-contained article, *A Formal Account of Petri-Net
+  Model-Based Testing with an Off-Target-Aware Ant Colony*.  It defines the
+  net `N = (P, T, F, I, w, β, ℓ, κ)` with weighted ordinary and inhibitor
+  arcs, place bounds, typed and labelled transitions, several named initial
+  markings, target and error markings, milestones, rare transitions and crash
+  predictions; the firing relation with bound violations excluded from the
+  graph; the full and lazily explored reachability graph; coverage,
+  saturation and novelty; target phases and board classes; the off-target
+  region as the complement of the backward-reachable set of its seeds, with a
+  proof that it is reward-inaccessible and closed under successors; the three
+  edge channels and the choice weight
+  `(a + a⁺ + 0.1)^α · ν^β · exp(−λ(r + g + r⁺))`; deposits,
+  back-propagation, evaporation and the matured-target exception; the
+  T-suffix recurrence `H_k(m) = mix(H_{k−1}(m−1), s_m)`; the suggester's
+  effective score; a table of defaults and a symbol-to-code table.
+- `references.bib` — Dijkstra (1959), Dorigo–Maniezzo–Colorni (1996),
+  Dorigo–Stützle (2004), Murata (1989), Utting–Legeard (2007) and
+  Utting–Pretschner–Legeard (2012).
+- `README.md` — the build command and a short table of contents.
+- `.gitignore` — the generated auxiliaries and `main.pdf`.
+
+The article is a definition-and-correspondence paper, not an empirical
+evaluation.  Section 6 says explicitly that the code is the ground truth if a
+definition ever drifts from it.
+
+### Build
+
+Verified with TeX Live 2025: `pdflatex main.tex`, `bibtex main`, then
+`pdflatex main.tex` twice.  The result is 16 pages, all citations and
+cross-references resolve, and the only remaining box warnings are underfull
+table cells.  The generated PDF is ignored; the sources are the deliverable.
+No C++ code changed in this step, so the suite and the version are untouched
+(`v0.0.6`).

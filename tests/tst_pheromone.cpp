@@ -224,7 +224,7 @@ Net makeDiamondNet(int region, std::uint64_t graphSeed)
 
     b.initial("start", {{corridor[0], 1}});
     // Non-intentional targets are legitimate ends, not campaign goals: they
-    // keep the corridor and the region out of the livelock and nontarget-region
+    // keep the corridor and the region out of the livelock and off-target-region
     // analyses, which would otherwise veto the very moves under test.
     b.targetMarking("idle", {{corridor[0], 1}});
     b.targetMarking("region-idle", {{r[0], 1}});

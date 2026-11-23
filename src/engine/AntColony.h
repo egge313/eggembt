@@ -15,7 +15,7 @@
 //                         as attractive and stops
 //   unexplored territory  an unexpanded state, or a state with an edge that has
 //                         not been definitely covered: attractive, stop
-//   a nontarget region     GLM-5.3-Flash (doku section 12 item 5): a state from
+//   an off-target region    GLM-5.3-Flash (doku section 12 item 5): a state from
 //                         which no target marking is reachable is a REPELLENT
 //                         REGION -- whatever goes in there can never come out
 //                         to a legitimate end, so a run that wanders in has to
@@ -50,7 +50,7 @@
 // otherwise one of the inputs, drawn with weight
 //     (attract + 0.1)^alpha * novelty^beta * exp(-lambda * (repel + region))
 // where novelty = 1/(1 + hits), or 0.01 for a saturated edge, and `region` is
-// the static nontarget region above (GLM-5.3-Flash). The tester can
+// the static off-target region above (GLM-5.3-Flash). The tester can
 // only choose inputs, hence the two-step draw. With the T-suffix layer on
 // (GLM-5.3-Flash, doku section 16), the input weight gains the (marking,
 // T-suffix) pair pheromone of the arrival context the edge would create: the
@@ -144,7 +144,7 @@ struct AntConfig {
         return depositMilestone * static_cast<double>(rank);
     }
 
-    // GLM-5.3-Flash: the deposit for the nontarget region (doku section 12
+    // GLM-5.3-Flash: the deposit for the off-target region (doku section 12
     // item 5). States from which no target marking is reachable form a further
     // repellent region: whatever goes in there can never come out to a
     // legitimate end, so a run that wanders in has to be restarted. Unlike
@@ -158,7 +158,9 @@ struct AntConfig {
     // deadlock, a livelock -- the campaign goes there on purpose), and states
     // that can still reach an unexpanded or incomplete state (a target marking
     // might lie beyond what is not known yet). 0 switches the region off.
-    double nontargetRepel = 1.0;
+    // DeepSeek V4.1 Flash: renamed to `off-target` in journal §36; the value,
+    // the computation and every consumer are unchanged.
+    double offTargetRepel = 1.0;
 
     double pEnvironment = 0.5;           // chance of an environment move when both kinds are possible
     std::function<double(EdgeId)> environmentWeight;  // e.g. observed frequencies; empty: uniform
@@ -225,7 +227,7 @@ public:
 
     double attract(EdgeId e) const { return e < attract_.size() ? attract_[e] : 0.0; }
     double repel(EdgeId e) const { return e < repel_.size() ? repel_[e] : 0.0; }
-    // GLM-5.3-Flash: the static nontarget region (doku section 12 item 5). Set,
+    // GLM-5.3-Flash: the static off-target region (doku section 12 item 5). Set,
     // not accumulated; recomputed when the graph grows, by iterate().
     double region(EdgeId e) const { return e < region_.size() ? region_[e] : 0.0; }
     double tauMax() const { return cfg_.tauMax; }
@@ -300,7 +302,7 @@ private:
 
     void deposit(StateId at, double amount, std::vector<float> &channel);
     void ensure();
-    void refreshNontargetRegionIfGrown();  // GLM-5.3-Flash: doku section 12 item 5
+    void refreshOffTargetRegionIfGrown();  // GLM-5.3-Flash: doku section 12 item 5
     void runAnt(StateId start);
     bool arrive(StateId s);
     EdgeId choose(StateId at, const TraceCascade &trace);
@@ -317,7 +319,7 @@ private:
 
     std::vector<float> attract_;
     std::vector<float> repel_;
-    std::vector<float> region_;         // GLM-5.3-Flash: the static nontarget region
+    std::vector<float> region_;         // GLM-5.3-Flash: the static off-target region
     std::size_t regionStatesSeen_ = 0;  // graph size at the last region refresh
     std::size_t regionEdgesSeen_ = 0;
     std::size_t expansionsLeft_ = 0;

@@ -1,0 +1,1042 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[margin=2.7cm]{geometry}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{amsthm}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{microtype}
+\usepackage[hidelinks]{hyperref}
+
+\newtheorem{definition}{Definition}[section]
+\newtheorem{proposition}[definition]{Proposition}
+\newtheorem{lemma}[definition]{Lemma}
+\newtheorem{remark}[definition]{Remark}
+\newtheorem{example}[definition]{Example}
+
+\newcommand{\N}{\mathbb{N}}
+\newcommand{\Npos}{\mathbb{N}_{>0}}
+\newcommand{\Pow}{\mathcal{P}}
+\newcommand{\pre}{\operatorname{pre}}
+\newcommand{\post}{\operatorname{post}}
+\newcommand{\inh}{\operatorname{inh}}
+\newcommand{\Enabled}{\operatorname{enabled}}
+\newcommand{\Succ}{\operatorname{Succ}}
+\newcommand{\Pred}{\operatorname{Pred}}
+\newcommand{\Reach}{\operatorname{Reach}}
+\newcommand{\Seeds}{\Sigma}
+\newcommand{\Off}{R}
+\newcommand{\kind}{\operatorname{kind}}
+\newcommand{\cls}{\operatorname{class}}
+\newcommand{\hits}{\operatorname{hits}}
+\newcommand{\need}{\operatorname{need}}
+\newcommand{\intentional}{\operatorname{intentional}}
+\newcommand{\vis}{\operatorname{vis}}
+\newcommand{\step}{\operatorname{step}}
+\newcommand{\mix}{\operatorname{mix}}
+\newcommand{\FNV}{\operatorname{FNV}}
+\newcommand{\TS}{\mathcal{H}}
+\newcommand{\Pair}{\mathcal{P}}
+\newcommand{\Tau}{\tau_{\max}}
+\newcommand{\wgt}{\operatorname{w}}
+\newcommand{\dist}{\operatorname{dist}}
+\newcommand{\tierpen}{\operatorname{penalty}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\B}{\mathbb{B}_{32}}
+\newcommand{\fir}[1]{\xrightarrow{#1}}
+\newcommand{\bool}{\{0,1\}}
+
+\title{\textbf{A Formal Account of Petri-Net Model-Based Testing\\
+with an Off-Target-Aware Ant Colony}}
+\author{The \texttt{eggembt} project}
+\date{Draft of 23 November 2026 --- product version \texttt{v0.0.6}}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This document gives a mathematical account of the model and the exploration
+heuristic used by \texttt{eggembt}, a Petri-net model-based testing tool.  We
+define the class of nets the tool accepts (weighted arcs, inhibitor arcs,
+place bounds, typed and labelled transitions, several named initial markings,
+target and error markings, milestones, rare transitions and crash
+predictions), the lazy reachability graph---the state space of the net---the
+tool builds, the coverage and target machinery that turns the graph into a
+testing plan, and the ant-colony optimisation (ACO) that steers the plan.  The heuristic is
+presented as a stochastic process on the graph: two learned pheromone
+channels, one static \emph{off-target} channel, novelty weighting,
+back-propagating deposits, evaporation, and an optional finer store indexed
+by a marking together with a hash of the recent trace (a \emph{T-suffix}).
+The final section relates the suggester's score to the colony.  Every
+definition is taken from the implementation, not invented for the paper; the
+default parameters quoted here are the ones in the source at version
+\texttt{v0.0.6}.
+\end{abstract}
+
+\tableofcontents
+
+\section{Introduction}
+
+\subsection{Scope}
+
+\texttt{eggembt} tests a system under test (SUT) against a Petri-net
+specification.  Petri nets are a classical model of concurrency and
+distributed state \cite{murata1989petri}, and deriving tests from a model is
+the subject of model-based testing \cite{utting2007practical,utting2012taxonomy}.
+The net supplies an oracle: a step of the SUT that the net
+cannot explain is a candidate bug, and a part of the net that no run has
+visited is untested.  The tool explores the reachability graph (RG) of the
+net---the graph of every marking the net can reach, also called its state
+space---while it drives the SUT, records coverage, and suggests the next
+input.  The suggestion is the place where the ant colony enters: virtual ants walk the
+\emph{model}, never the SUT, and leave pheromone that makes productive routes
+more likely in later walks.  The heuristic is an ant-colony optimisation
+\cite{dorigo1996ants,dorigo2004aco} over the reachability graph.
+
+This document formalises exactly that pipeline.  It is deliberately close to
+the code.  Where the implementation makes a choice that a textbook definition
+would leave open---for example what happens when a firing would exceed a place
+bound, or how a target marking differs from a target transition---the choice
+is stated as part of the definition.  Sections~\ref{sec:nets} and
+\ref{sec:rg} define the net and the graph, Sections~\ref{sec:targets}
+and~\ref{sec:offtarget} define targets and the off-target region,
+Section~\ref{sec:aco} defines the colony, Section~\ref{sec:suggester} defines
+the suggester's score, and
+Section~\ref{sec:implementation} maps symbols to the implementation.
+The companion design record, \texttt{journal.md}, contains the engineering
+history and the reasons behind the choices.
+
+\subsection{Notation}
+
+For a set $X$, $\Pow(X)$ is its power set and $\Pow_{\mathrm{fin}}(X)$ the set
+of finite subsets.  A \emph{multiset} over $X$ is a function $X\to\N$ with
+finite support.  We write $M(p)$ for the multiplicity of $p$ and identify a
+multiset with its graph.  $\mathbb{1}_{A}$ is the indicator of a predicate
+$A$.  All token counts are 32-bit unsigned integers in the implementation;
+the mathematical definitions use $\N$ and note the machine limit where it
+matters.  We write $\B=\{0,\dots,2^{32}-1\}$ for the 32-bit words.  A partial
+function $f\colon X\rightharpoonup Y$ has a domain
+$\operatorname{dom}(f)$.  We mostly say \emph{marking} for an element of the
+state space; the word \emph{state} is kept for the compound \emph{state space},
+a synonym for the reachability graph, and for implementation names such as
+\texttt{maxStates}.
+
+\section{Petri nets with tester semantics}\label{sec:nets}
+
+Our nets are Place/Transition nets with weighted ordinary arcs, weighted
+inhibitor arcs, place bounds and typed transitions, in the classical sense of
+\cite{murata1989petri}; the annotations of Section~\ref{sec:annotations} are
+specific to the testing tool.
+
+\subsection{The net}
+
+\begin{definition}[Net]\label{def:net}
+A \emph{net} is a tuple
+\[
+  N=(P,T,F,I,w,\beta,\ell,\kappa)
+\]
+where
+\begin{enumerate}[label=(\roman*),leftmargin=2.2em]
+  \item $P$ and $T$ are finite, non-empty, disjoint sets of \emph{places} and
+        \emph{transitions};
+  \item $F\subseteq (P\times T)\cup(T\times P)$ is the set of \emph{ordinary
+        arcs};
+  \item $I\subseteq P\times T$ is the set of \emph{inhibitor arcs};
+  \item $w\colon F\cup I\to\Npos$ assigns a positive \emph{weight} to every
+        arc;
+  \item $\beta\colon P\to\Npos\cup\{\infty\}$ assigns a \emph{bound} to every
+        place, with $\infty$ meaning unbounded;
+  \item $\ell\colon T\to\Sigma^{*}$ assigns a label over an alphabet $\Sigma$;
+        $\ell(t)=\varepsilon$ means that $t$ is \emph{unlabelled};
+  \item $\kappa\colon T\to\{\mathsf{C},\mathsf{O},\mathsf{I}\}$ assigns a
+        \emph{kind}: $\mathsf{C}$ controllable (the tester may send it),
+        $\mathsf{O}$ observable (the SUT emits it), $\mathsf{I}$ internal.
+\end{enumerate}
+A place may have both an ordinary and an inhibitor arc to the same transition;
+the two conditions are then imposed independently.
+\end{definition}
+
+The label of a transition is the SUT-level event it corresponds to.  An
+unlabelled internal transition is \emph{silent}: it changes the marking but
+cannot be reported by a plug-in.  An internal transition with a label is
+\emph{traced} by default, and a model may explicitly override visibility;
+write $\vis(t)$ for the resulting visibility predicate.  Observable
+transitions are always visible; silent internal transitions are never visible
+to the tester.
+
+For a transition $t$ and place $p$ define the three arc multiplicities
+\[
+  \pre_t(p)=
+  \begin{cases}
+    w(p,t), & (p,t)\in F,\\
+    0, & \text{otherwise},
+  \end{cases}
+  \qquad
+  \post_t(p)=
+  \begin{cases}
+    w(t,p), & (t,p)\in F,\\
+    0, & \text{otherwise},
+  \end{cases}
+\]
+and
+\[
+  \inh_t(p)=
+  \begin{cases}
+    w(p,t), & (p,t)\in I,\\
+    \infty, & \text{otherwise}.
+  \end{cases}
+\]
+The use of $\infty$ makes the inhibitor test vacuously true when no inhibitor
+arc exists.  A \emph{marking} is a multiset $M\colon P\to\N$.  The
+multiplicity $M(p)$ is the number of tokens on $p$.
+
+\begin{definition}[Enabledness]\label{def:enabled}
+Transition $t$ is \emph{enabled} in marking $M$, written $M\models
+\Enabled(t)$, iff
+\[
+  \forall p\in P:\quad
+  M(p)\ge \pre_t(p)
+  \quad\text{and}\quad
+  M(p)<\inh_t(p).
+\]
+\end{definition}
+
+Enabledness deliberately ignores place bounds.  A transition may therefore be
+enabled while its firing would violate a bound; such a firing is a
+\emph{bound violation}, not a step (Definition~\ref{def:firing}).
+
+\begin{definition}[Firing]\label{def:firing}
+Let $M\models\Enabled(t)$ and define the candidate marking
+\[
+  M' = M-\pre_t+\post_t,
+  \qquad
+  M'(p)=M(p)-\pre_t(p)+\post_t(p)\quad\text{for all }p\in P.
+\]
+The \emph{firing step} $M\fir{t}M'$ exists iff
+\[
+  M'(p)\le \beta(p)\quad\text{for every }p\in P
+\]
+and every $M'(p)$ fits into the implementation's 32-bit token counter.  If
+the bound or the counter is exceeded, the attempted firing is recorded as a
+\emph{bound violation} $(M,t,p)$ and creates no step.  Tokens are consumed
+before they are produced, so a place that is both an input and an output of
+$t$ is handled by the single formula above.
+\end{definition}
+
+The step relation is the usual Petri-net firing relation with one tester
+convention: a firing that would exceed a declared bound is not silently
+clamped and not turned into a transition to an error marking; it is excluded
+from the reachability graph and reported separately.  This keeps a cut-off
+model honest: the graph never invents a marking the model forbids.
+
+\subsection{Named markings and classification}
+
+The model distinguishes three roles for named markings.
+
+\begin{definition}[Named markings]\label{def:named}
+An \emph{initial marking} is a marking $M_0$.  A \emph{target marking} is a
+pair $(A,\mu)$ with $A\in\Pow_{\mathrm{fin}}(P\times\Npos)$ and a match mode
+$\mu\in\{\mathsf{exact},\mathsf{covers}\}$.  An \emph{error marking} is a
+target marking equipped with a policy
+$\pi\in\{\mathsf{until\_covered},\mathsf{once},\mathsf{avoid}\}$, an optional
+hit count, a dump mode and a dump budget.  The model supplies finite families
+\[
+  \mathcal{M}_0=\{M_0^{(1)},\dots,M_0^{(k)}\},\quad
+  \mathcal{G}=\{(A_j,\mu_j,\iota_j)\}_{j=1}^{m},\quad
+  \mathcal{E}=\{(A_i,\mu_i,\pi_i,r_i)\}_{i=1}^{n},
+\]
+where $\iota_j\in\bool$ marks a target marking as \emph{intentional}.
+\end{definition}
+
+A finite marking $A$ is read as the marking that puts $A(p)$ tokens on each
+listed place and zero tokens everywhere else.  The match relation is
+\[
+  M\models_{\mathsf{exact}} A \iff M=A,
+  \qquad
+  M\models_{\mathsf{covers}} A \iff \forall p\in P:\; M(p)\ge A(p).
+\]
+Error markings are tested before target markings.  The classification of a
+marking is
+\[
+  \kind(M)=
+  \begin{cases}
+    \mathsf{Error}(i), & \text{the least }i\text{ with }M\models_{\mu_i} A_i,\\
+    \mathsf{Target}(j), & \text{the least }j\text{ with }M\models_{\mu_j} A_j
+                         \text{ and no error matches},\\
+    \mathsf{Normal}, & \text{otherwise}.
+  \end{cases}
+\]
+The least-index convention is the implementation's: when several named
+markings match, the first in file order wins, and an error always wins over a
+target.  A marking with kind $\mathsf{Target}$ or $\mathsf{Error}$ is never
+reported as a deadlock merely because no transition is enabled; it is a
+declared end or fault.
+
+\subsection{Transition annotations}\label{sec:annotations}
+
+The net also carries annotations that do not change the token game but change
+how the tester interprets a step.  They are part of ``our kind of Petri net''
+because the exploration heuristics read them directly.
+
+\begin{center}
+\small
+\begin{tabular}{@{}p{0.24\linewidth}p{0.68\linewidth}@{}}
+\toprule
+Annotation & Meaning \\
+\midrule
+$\mathsf{error}(t)$ &
+The transition itself is an error.  A \emph{certain} step of $t$ fails the
+run, requests a post-mortem, and lays catastrophe pheromone. \\
+$\mathsf{milestone}(t)=r$ &
+A certain step of $t$ is a success of rank $r\in\Npos$, worth an attractive
+deposit of $1.5\,r$.  It is not the campaign's goal, only a signpost. \\
+$\mathsf{rare}(t)=(p,a,\delta)$ &
+The transition is declared to fire with small probability $p$, may be hunted
+for at most $a$ attempts, and a dwell at its enabling marking lasts $\delta$
+milliseconds.  The probability is a promise by the modeller, not measured. \\
+$\mathsf{crash}(t)=c$ &
+The SUT may die while stepping $t$.  The crash class $c$ (always, often,
+sometimes, rare, random), an optional prior mean and a reproduction budget
+calibrate the credibility experiment that turns a probable crash into a
+confirmed one. \\
+$\mathsf{command}(t)$ &
+A shell command executed when a step of $t$ is certain; an optional place
+guard and an execution budget are part of the annotation. \\
+$\mathsf{lifecycle}(t)$ &
+A controllable transition whose label is one of the reserved words
+\textsf{start}, \textsf{restart}, \textsf{stop}, \textsf{pause},
+\textsf{resume}.  The tester still sends the label; with no output arcs the
+engine, not the token game, supplies the landing marking.  Such a transition
+counts as enabled but creates no ordinary RG edge. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent
+A \emph{certain} step is one on which the belief tracker can name the fired
+transition, not merely one of several candidates; Section~\ref{sec:belief}
+recalls the belief set.  Crash predictions may also be attached to a named
+marking, in which case the markings matching it play the role of the
+predicted place.  A predicted crash is a \emph{target} until the reproduction
+experiment resolves it; only then does the catastrophe channel take over.
+
+\subsection{Belief sets}\label{sec:belief}
+
+A run does not observe the marking directly.  It sees a sequence of visible
+events: stimuli it sent, outputs and traced internal steps reported by the
+plug-in, and quiescence reports.  The tracker therefore maintains a
+\emph{belief set} $B\subseteq\Reach(N)$ of markings consistent with the events
+so far.  Initially $B$ is the set of chosen initial markings (or a subset if
+the campaign restricts the initials).  A stimulus with label $a$ followed by
+an observed label $b$ updates $B$ by the relation
+\[
+  B' = \bigl\{\,M'\;:\;\exists M\in B,\; t,t'\in T,\;
+        \ell(t)=a,\ \ell(t')=b,\;
+        M\fir{t}M''\fir{t'}M'\,\bigr\},
+\]
+with the obvious variants for silent internal steps and for an observed event
+that needs no preceding stimulus.  When an observed label is possible through
+several transitions, all of them remain candidates.  The implementation also
+records \emph{ambiguous} coverage for elements that lie on some but not all
+candidate paths.
+
+The belief matters to the colony in two ways.  First, the ants start from the
+belief markings, so their walks explore the part of the model the SUT may
+currently occupy.  Second, deposits from real runs are anchored at definitely
+credited steps: a milestone or an error transition deposits only when the
+belief pins the step down.
+
+\section{Reachability graph (state space), coverage and targets}\label{sec:rg}
+
+\subsection{The full reachability graph}
+
+\begin{definition}[Reachability graph]\label{def:rg}
+The \emph{reachability graph}---also called the \emph{state space}---of
+$N$ from a set $\mathcal{M}_0$ of initial markings is the labelled directed
+graph
+\[
+  G(N,\mathcal{M}_0)=(S,E,S_0),
+\]
+where $S\subseteq\N^{P}$ is the least set containing every $M_0^{(i)}$ and
+closed under firing, $S_0=\{M_0^{(i)}\}$ is the set of chosen initial
+markings, and
+\[
+  E=\{\,(M,t,M')\;:\;M\in S,\ M\fir{t}M'\,\}.
+\]
+Nodes are distinct markings, not occurrences: two different paths that reach
+the same marking share one node.  The reachability graph is therefore exactly
+the state space of the net.  An edge is written $e=(M,t,M')$ with source
+$\sigma(e)=M$, target $\tau(e)=M'$ and label $\ell(t)$.
+\end{definition}
+
+The graph is generally infinite even for a finite net.  The tool therefore
+never constructs $G$ in full.  It constructs a finite \emph{explored
+subgraph} and treats the unexplored part explicitly.
+
+\begin{definition}[Explored subgraph]\label{def:explored}
+An explored subgraph is a triple $(S_{\mathrm{known}},S_{\mathrm{exp}},E_{\mathrm{exp}})$
+such that
+\begin{enumerate}[label=(\roman*),leftmargin=2.2em]
+  \item $S_{\mathrm{exp}}\subseteq S_{\mathrm{known}}\subseteq S$;
+  \item every edge of $E_{\mathrm{exp}}$ has its source in $S_{\mathrm{exp}}$
+        and its target in $S_{\mathrm{known}}$;
+  \item for every $s\in S_{\mathrm{exp}}$, every legal successor of $s$ is in
+        $E_{\mathrm{exp}}$, unless the marking limit stopped the creation of
+        a new node, in which case $s$ is flagged \emph{incomplete}.
+\end{enumerate}
+The \emph{frontier} is $U=S_{\mathrm{known}}\setminus S_{\mathrm{exp}}$.
+\end{definition}
+
+The marking limit (the implementation's \texttt{maxStates}, default one
+million markings) is a hard cap.  When it is hit, new nodes are not created,
+the source marking is flagged incomplete, and the graph is marked truncated.
+Analyses must never confuse the resulting frontier with a deadlock.  Bound
+violations are recorded beside the graph and never become edges.
+
+\subsection{Coverage and saturation}
+
+Coverage is accumulated over runs and restored from the run log.  For each
+marking, edge and transition the database keeps a \emph{definite} count (the
+visit lies on the one known path) and an \emph{ambiguous} count (the visit is
+possible, but the belief does not pin it down).  Write
+\[
+  d(s),\ d(e),\ d(t)\in\N
+\]
+for the definite counts and $\theta\in\Npos$ for the coverage threshold
+(default $\theta=1$).
+
+\begin{definition}[Saturation and novelty]\label{def:saturation}
+An element is \emph{saturated} when its definite count reaches $\theta$.  For
+an edge $e$ the \emph{novelty} is
+\[
+  \nu(e)=
+  \begin{cases}
+    \dfrac{1}{1+d(e)}, & d(e)<\theta,\\[2mm]
+    0.01, & d(e)\ge\theta.
+  \end{cases}
+\]
+\end{definition}
+
+Novelty is the colony's ``unexplored smells interesting'' term.  The value
+$0.01$ is deliberately tiny but nonzero: a saturated edge is not absolutely
+forbidden, it merely stops competing with unexplored ones.  At the coverage
+level, saturation also wipes an edge's attractive pheromone during
+evaporation.
+
+\subsection{Target phases and board classes}\label{sec:targets}
+
+The target board turns the static target and error markings into a dynamic
+classification of markings.
+
+\begin{definition}[Target phase]\label{def:phase}
+For a target or error marking with required definite visits
+$r\in\N$ and observed definite visits $h\in\N$, the phase is
+\[
+  \operatorname{phase}=
+  \begin{cases}
+    \mathsf{Seeking}, & h<r,\\
+    \mathsf{Satisfied}, & h\ge r.
+  \end{cases}
+\]
+\end{definition}
+
+For an error marking the requirement follows its policy:
+\[
+  r=
+  \begin{cases}
+    0, & \pi=\mathsf{avoid},\\
+    1, & \pi=\mathsf{once},\\
+    r_{\text{declared}}\ \text{or}\ \theta, & \pi=\mathsf{until\_covered}.
+  \end{cases}
+\]
+Target markings are intentional or not.  An intentional target marking has
+$r=1$; the first certain visit ends the campaign.  A non-intentional target
+marking is not a goal and is never forbidden; it remains an idle or
+``legitimate end'' marking used by the livelock analysis.
+
+Deadlocks and certain terminal cycles are additional targets.  All deadlocks
+of the explored graph form one target, with the policy configured for
+deadlocks (default \textsf{once}).  Every certain terminal cycle found by the
+static livelock analysis is one target, again with its own policy and hit
+count.  While a crash prediction is unresolved, the markings where the
+predicted transition is enabled (or the markings that certainly match the
+predicted named marking) are \emph{seeking}, overriding an earlier
+classification.
+
+\begin{definition}[Board class]\label{def:class}
+The \emph{board class} of a marking $s$ is
+\[
+  \cls(s)=
+  \begin{cases}
+    \mathsf{Forbidden}, & \text{satisfied target or \textsf{avoid} error},\\
+    \mathsf{Seeking}, & \text{still-sought target, error, deadlock,
+                        livelock or crash},\\
+    \mathsf{Normal}, & \text{otherwise}.
+  \end{cases}
+\]
+Error markings take precedence over target markings; a marking that belongs
+to both inherits the error's class.
+\end{definition}
+
+\begin{remark}
+``Forbidden'' is a steering decision, not a claim that the marking is
+illegal.  A satisfied error marking has been seen often enough; the campaign
+now avoids
+the expensive post-mortem and restart.  A deadlock or terminal cycle that has
+been confirmed is treated the same way.  The run outcome still reports the
+situation when it happens; only the planner's preference changes.
+\end{remark}
+
+\subsection{The off-target region}\label{sec:offtarget}
+
+The target markings describe where a run should end.  Their complement---the
+markings from which no such end is reachable any more---is a
+\emph{reward-inaccessible} region of the explored graph: a run can enter it
+but never legitimately leave.  The tool calls it the \emph{off-target region}
+and marks its entrances with a static repellent value.
+
+\begin{definition}[Off-target region]\label{def:offtarget}
+Let $G_{\mathrm{exp}}$ be the explored subgraph and let
+\[
+  \begin{aligned}
+    \Seeds={}&
+    \{\,s\in S_{\mathrm{exp}}:\kind(s)=\mathsf{Target}\,\}\\
+    &{}\cup
+    \{\,s\in S_{\mathrm{exp}}:\cls(s)=\mathsf{Seeking}\,\}\\
+    &{}\cup
+    \{\,s\in S_{\mathrm{exp}}:
+        s\text{ is incomplete or has an edge into }U\,\}.
+  \end{aligned}
+\]
+Define the \emph{off-target region} as
+\[
+  \Off=\{\,s\in S_{\mathrm{exp}}:\text{there is no path in }
+        G_{\mathrm{exp}}\text{ from }s\text{ to a marking in }\Seeds\,\}.
+\]
+Equivalently, $\Off$ is the complement in $S_{\mathrm{exp}}$ of the set of
+markings that can reach $\Seeds$ by a (possibly empty) path.  It is computed by
+a reverse breadth-first search from $\Seeds$ over the predecessor index of the
+explored graph.
+\end{definition}
+
+The three kinds of seeds are the markings behind which a legitimate end is
+\emph{known} to exist or the future is \emph{unknown}:
+
+\begin{itemize}
+  \item every target-kind marking, including a non-intentional one, because it
+        is a legitimate end for the livelock analysis;
+  \item every marking the board is still seeking---an error marking, a
+        deadlock, a livelock, an unresolved crash prediction---because the
+        campaign goes there on purpose;
+  \item every expanded marking that can still step into the frontier or whose
+        expansion was cut off, because a target marking might lie beyond what
+        is not known yet.
+\end{itemize}
+
+\begin{definition}[Off-target channel]\label{def:offtarget-channel}
+Let $\rho\ge0$ be the configured off-target repel (default $\rho=1.0$;
+$\rho=0$ switches the mechanism off).  The static channel
+$g\colon E_{\mathrm{exp}}\to[0,\rho]$ is
+\[
+  g(e)=
+  \begin{cases}
+    \rho, & \tau(e)\in\Off,\\
+    0, & \text{otherwise}.
+  \end{cases}
+\]
+\end{definition}
+
+The channel is \emph{set}, never accumulated and never evaporated.  It is
+recomputed from scratch whenever the graph has grown, since a newly expanded
+marking can turn a previously lost marking into one that can still reach a
+target.  Edges into the frontier are deliberately not marked: unknown
+territory is presumed innocent until it is expanded.
+
+\begin{proposition}[The region is closed under successors]\label{prop:closed}
+Let $s\in\Off$ and let $(s,t,s')\in E_{\mathrm{exp}}$.  Then $s'\in\Off$.
+Consequently a walk that enters $\Off$ can never leave it through an explored
+edge, and it can never reach a marking of $\Seeds$ or the frontier.
+\end{proposition}
+
+\begin{proof}
+If $s'$ could reach a seed, then $s$ could reach it by the edge $(s,t,s')$,
+contradicting $s\in\Off$.  If $s'$ were in the frontier, then $s$ would have
+an edge into $U$ and would itself be a seed, again a contradiction.  Hence
+$s'\in S_{\mathrm{exp}}\setminus\Seeds$ and $s'$ cannot reach $\Seeds$; by
+Definition~\ref{def:offtarget}, $s'\in\Off$.
+\end{proof}
+
+Thus $\Off$ is exactly the largest forward-closed set of expanded markings
+that contains no rewarding seed.  The ants are not killed when they enter
+it---uncovered behaviour inside the region may still be worth covering---but
+every edge into the region carries the static repel $g(e)$, which lowers the
+weight of that edge by the factor $e^{-\lambda\rho}$ in the choice rule
+(Section~\ref{sec:choice}).  With the default $\lambda=1$ and $\rho=1$, the
+factor is $e^{-1}\approx0.368$.
+
+\section{The ant colony}\label{sec:aco}
+
+\subsection{Channels and the environment}
+
+Fix an explored graph $G_{\mathrm{exp}}=(S,E)$.  The colony keeps two learned
+channels and the static off-target channel:
+\[
+  a\colon E\to[0,\Tau],\qquad
+  r\colon E\to[0,\Tau],\qquad
+  g\colon E\to[0,\rho],
+\]
+called \emph{attract}, \emph{repel} and \emph{off-target}.  Initially
+$a(e)=r(e)=0$; $g$ is computed by Definition~\ref{def:offtarget-channel}.
+The cap is $\Tau=10$ by default.  The channels are not persisted: edge
+identifiers belong to one session's graph, and the colony re-learns quickly
+from the coverage that the run log restores.
+
+At a marking $s$, the outgoing edges split into the tester's inputs and the
+SUT's own moves:
+\[
+  E_{\mathrm{C}}(s)=\{e\in E:\sigma(e)=s,\ \kappa(t_e)=\mathsf{C}\},
+  \qquad
+  E_{\mathrm{O}}(s)=\{e\in E:\sigma(e)=s,\ \kappa(t_e)\neq\mathsf{C}\}.
+\]
+Only controllable edges are under the tester's control; observable and
+internal edges are the environment's moves.  With probability $p_{\mathrm{env}}$
+(default $0.5$) an ant takes an environment move when both pools are nonempty;
+if one pool is empty it takes the other.  Environment moves use a separate
+weight $\omega(e)$, uniform by default and optionally the observed
+offered-versus-taken rate of the transition's label.  The pheromone formula
+does not apply to environment moves.
+
+\subsection{The choice rule}\label{sec:choice}
+
+\begin{definition}[Edge weight]\label{def:weight}
+For an input edge $e=(s,t,s')$, let $\TS$ be the ant's current T-suffix
+(Section~\ref{sec:tsuffix}) and let
+\[
+  \TS'=\TS\cdot h(t)
+\]
+be the suffix extended by the edge's step.  Write
+$a^{+}(e)=\Pair_a(s',\TS')$ and $r^{+}(e)=\Pair_r(s',\TS')$ for the pair
+channels (both zero when the T-suffix layer is off).  The \emph{weight} of the
+input edge is
+\[
+  \wgt(e)=\bigl(a(e)+a^{+}(e)+0.1\bigr)^{\alpha}\,
+        \nu(e)^{\beta}\,
+        \exp\!\Bigl(-\lambda\bigl(r(e)+g(e)+r^{+}(e)\bigr)\Bigr),
+  \label{eq:weight}
+\]
+with defaults $\alpha=\beta=\lambda=1$.  The constant $0.1$ is a floor: an
+edge with no pheromone at all still has a positive base.
+\end{definition}
+
+Within the chosen pool, the probability of taking edge $e$ is proportional to
+its weight:
+\[
+  \Pr(e\mid s)=
+  \begin{cases}
+    \dfrac{\wgt(e)}{\sum_{e'\in E_{\mathrm{C}}(s)}\wgt(e')},
+      & e\in E_{\mathrm{C}}(s),\ \sum\wgt>0,\\[3mm]
+    \dfrac{1}{|E_{\mathrm{C}}(s)|}, & e\in E_{\mathrm{C}}(s),\ \sum\wgt=0,\\[3mm]
+    \dfrac{\omega(e)}{\sum_{e'\in E_{\mathrm{O}}(s)}\omega(e')},
+      & e\in E_{\mathrm{O}}(s),
+  \end{cases}
+\]
+with the environment case made uniform when the $\omega$-sum is zero.  The
+two-step draw---environment versus input, then within the pool---is the exact
+implementation; it keeps the SUT's own nondeterminism separate from the
+tester's choice.
+
+\subsection{Arrival, deposits and back-propagation}\label{sec:deposits}
+
+An ant starts at a start marking, walks at most $40$ steps, and stops when
+it arrives at a marking that teaches it something.  The arrival rule is:
+
+\begin{enumerate}[label=(\roman*),leftmargin=2.2em]
+  \item If $\cls(s)=\mathsf{Forbidden}$ (a catastrophe), the ant deposits the
+        catastrophe amount $3.0$ into the repel channel and dies.
+  \item If $\cls(s)=\mathsf{Seeking}$ (a still-sought target), the ant
+        deposits the target amount $2.0$ into the attract channel and stops.
+  \item If $s$ is unexpanded and the round's expansion budget is exhausted,
+        the ant deposits the unexplored amount $1.0$ into the attract channel
+        and stops.  If the budget is not exhausted, the marking is expanded
+        and the walk continues.
+  \item If $s$ has an outgoing edge whose target is not forbidden and whose
+        definite coverage is zero, the ant deposits $1.0$ into the attract
+        channel and stops: there is unexplored behaviour here.
+  \item Otherwise the ant walks on.
+\end{enumerate}
+
+A deposit is not laid only on the ant's arrival edge.  From the arrival
+marking $s$, the colony walks backwards through the predecessor index to a depth
+$D\ge5$ (default $D=5$).  For an edge $e$ at reverse distance $d(e)$---where
+$d(e)=0$ for the edges directly entering $s$, $d(e)=1$ for the edges entering
+those predecessors, and so on---the deposit is
+\[
+  c(e)\leftarrow
+  \min\!\Bigl(\Tau,\; c(e)+A\,\gamma^{d(e)}\Bigr),
+  \qquad d(e)<D,
+  \label{eq:backprop}
+\]
+where $A$ is the deposited amount, $\gamma=0.7$ is the depth decay, and
+$c\in\{a,r\}$ is the channel.  Nodes are visited once, at their shortest
+reverse distance, so a diamond in the graph is not double-counted.  In a
+cycle the signal also reaches edges that merely lead back to the place where
+the event can happen, weaker the further they are; the direct way in always
+carries the most.
+
+Real runs deposit the same channels with their own knowledge:
+\[
+  A_{\mathrm{milestone}}=1.5\,r,\qquad
+  A_{\mathrm{catastrophe}}=3.0\bigl(1+0.25\min(k,8)\bigr),
+\]
+where $r$ is the milestone rank and $k$ the number of stimuli the run spent
+on the way in (capped at eight).  A target marking that the campaign reached
+deposits $2.0$.  A milestone is not priced by the way in---a success is a
+success---while a catastrophe is: a crash one input away is marked lightly, a
+crash deep in the model is marked hard.  The cap $\Tau$ remains the ceiling.
+Deposits from real runs are anchored at definitely credited steps, so an
+ambiguous stretch does not invent a milestone outcome.
+
+\subsection{Evaporation, saturation and the matured-target exception}
+
+After an iteration, when evaporation is on,
+\[
+  a(e)\leftarrow(1-\varepsilon_a)\,a(e),
+  \qquad
+  r(e)\leftarrow(1-\varepsilon_r)\,r(e),
+  \label{eq:evaporation}
+\]
+with $\varepsilon_a=0.10$ and $\varepsilon_r=0.02$.  Repellent memory
+therefore outlives attractive memory, which is deliberate: the lesson of a
+costly mistake should last longer than the attraction to a goal that has
+already been reached.  The static channel $g$ does not evaporate.
+
+Saturation is a coverage rule, not evaporation: every saturated edge has its
+attraction set to zero even if the rest is evaporating.  This is how the
+colony moves on from a covered part of the graph.
+
+The optional merge-time rule used when restoring pheromone from an earlier
+campaign spares a matured target.  More precisely, every marking whose board
+class is $\mathsf{Forbidden}$---a satisfied target, error, deadlock or
+livelock---has its incoming edges (and the corresponding pair entries)
+exempted from the per-iteration multiplication, while saturation still
+applies.  The finding has reached its visited-$N$ criterion and the lesson
+should outlive the merge.  The rule is off by default and is
+orthogonal to the definitions above; it only changes which entries
+Equation~\eqref{eq:evaporation} touches.
+
+\subsection{The T-suffix layer}\label{sec:tsuffix}
+
+The edge channels say ``this way is good''.  They do not distinguish two
+routes that reach the same marking.  The optional T-suffix layer adds that
+distinction with a bounded memory of the recent trace.
+
+\begin{definition}[Step hash and suffix]\label{def:tsuffix}
+For a transition $t$, the \emph{step identity} is
+\[
+  \operatorname{id}(t)=
+  \begin{cases}
+    \ell(t), & \ell(t)\neq\varepsilon,\\
+    \text{``I:''}\,\Vert\,\operatorname{id}_{\mathrm{net}}(t), & \text{otherwise},
+  \end{cases}
+\]
+and the \emph{step hash} is the 32-bit FNV-1a hash
+\[
+  h(t)=\FNV(\operatorname{id}(t)).
+\]
+Fix a length $N\in\{0,\dots,8\}$ (default $0$, i.e.\ off).  A \emph{T-suffix}
+is a tuple $\TS=(H_1,\dots,H_N)\in(\B)^{N}$.  For a trace
+$s_1,\dots,s_m$ of step hashes, define
+\[
+  H_k^{(0)}=\kappa_0,
+  \qquad
+  H_k^{(m)}=\mix\bigl(H_{k-1}^{(m-1)},s_m\bigr),
+  \quad k=1,\dots,N,
+  \label{eq:tsuffix}
+\]
+where $\kappa_0=\mathtt{0x5EED5EED}$ is the seed, $H_0^{(m-1)}$ is interpreted
+as $\kappa_0$ for $k=1$, and
+\[
+  \mix(c,s)=
+  \operatorname{avalanche}\bigl((c\oplus s)\cdot\mathtt{0x9E3779B9}\bigr),
+\]
+with the Murmur-style finalizer
+\[
+  \begin{aligned}
+    h_1 &= \bigl(h\oplus(h\gg15)\bigr)\cdot\mathtt{0x85EBCA6B},\\
+    h_2 &= \bigl(h_1\oplus(h_1\gg13)\bigr)\cdot\mathtt{0xC2B2AE35},\\
+    \operatorname{avalanche}(h) &= h_2\oplus(h_2\gg16).
+  \end{aligned}
+\]
+All shifts are logical right shifts on 32-bit words and all additions and
+multiplications are modulo $2^{32}$.
+\end{definition}
+
+Written out step by step, the finalizer is: xor with $h\gg15$, multiply by
+\texttt{0x85EBCA6B}, xor with $h\gg13$, multiply by \texttt{0xC2B2AE35}, xor
+with $h\gg16$.  The recurrence gives the intended suffix semantics:
+$H_1^{(m)}$ depends only on the last step, $H_2^{(m)}$ on the last two, and
+$H_N^{(m)}$ on the last $N$ steps.  A trace shorter than $k$ contributes the
+seed for the missing deeper history.  One arriving step updates all $N$
+elements in $O(N)$ by a rolling carry, and a candidate edge is priced by
+extending a copy of the current suffix with the edge's step.
+
+\begin{definition}[Pair channels]\label{def:pairs}
+For $N>0$ the colony keeps a second store
+\[
+  \Pair_a,\Pair_r\colon S\times(\B)^{N}\to[0,\Tau].
+\]
+A pair deposit at arrival marking $s$ with suffix $\TS$ lands flat, with no
+back-propagation:
+\[
+  \Pair_c(s,\TS)\leftarrow
+  \min\bigl(\Tau,\Pair_c(s,\TS)+A\bigr).
+\]
+Real-run milestones and catastrophes deposit the same amounts as their edge
+deposits.  The pair channels evaporate with the same rates as the edge
+channels, and an entry whose two channels both fall below $10^{-4}$ is
+pruned.  With $N=0$ every pair operation is a no-op.
+\end{definition}
+
+The effect on the choice rule is exactly the $a^{+}$ and $r^{+}$ terms in
+Equation~\eqref{eq:weight}: the pair attraction joins the base of the power,
+the pair repulsion joins the exponent of the decay.  A catastrophe suffered
+through one route therefore no longer condemns the same marking reached
+through another route.
+
+\subsection{One iteration}\label{sec:iteration}
+
+\begin{algorithm}[htbp]
+\caption{One colony iteration (defaults in brackets)}
+\label{alg:iteration}
+\begin{algorithmic}[1]
+\Require explored graph $G$, coverage database, start markings $S_{\mathrm{start}}$
+\State refresh the off-target region if the graph grew \Comment{Definition~\ref{def:offtarget}}
+\State refresh the target board and the predecessor index
+\State $B_{\mathrm{exp}}\gets 200$ \Comment{expansion budget for this iteration}
+\For{$i\gets1$ \textbf{to} $20$}
+  \State pick a start marking uniformly from $S_{\mathrm{start}}$
+  \State $\TS\gets(\kappa_0,\dots,\kappa_0)$; $s\gets$ start
+  \For{$\mathit{step}\gets1$ \textbf{to} $40$}
+    \If{$s$ is not expanded}
+      \If{$B_{\mathrm{exp}}=0$} \textbf{break} \EndIf
+      \State expand $s$; $B_{\mathrm{exp}}\gets B_{\mathrm{exp}}-1$
+    \EndIf
+    \State choose an edge $e$ by the two-step rule of Section~\ref{sec:choice}
+    \If{no edge is enabled} \textbf{break} \EndIf
+    \State $s\gets\tau(e)$; $\TS\gets\TS\cdot h(t_e)$
+    \State apply the arrival rule of Section~\ref{sec:deposits}
+    \If{the arrival rule stopped the ant} \textbf{break} \EndIf
+  \EndFor
+\EndFor
+\If{evaporation is on}
+  \State apply Equation~\eqref{eq:evaporation} and wipe saturated attraction
+\EndIf
+\end{algorithmic}
+\end{algorithm}
+
+The iteration is deterministic for a given seed: the colony owns a uniform
+generator on top of \texttt{std::mt19937\_64}, so the result does not depend
+on the standard library's distribution implementation.  A round may expand at
+most 200 new markings in total, shared by all its ants.  The default number of
+ants is 20 and the default walk length is 40 steps.
+
+\section{The suggester}\label{sec:suggester}
+
+The colony explores the model; the suggester chooses the next input for the
+live SUT.  It scores each candidate controllable transition by a shortest
+distance to a goal, corrected for risk, hazards and pheromone.  The two share
+the graph, the coverage database and the target board.
+
+\subsection{Goal distance}
+
+A backward Dijkstra pass \cite{dijkstra1959note} from all goal markings over
+the explored graph gives the cost
+\[
+  \dist(s)=\text{shortest number of edges from }s\text{ to a goal},
+\]
+with a tier penalty added for the goal's tier, so a slightly longer route to a
+rare goal outranks a shorter route to an ordinary edge.  Goals are ranked in
+tiers: rare transition, target, uncovered transition, uncovered edge,
+frontier; $\dist(s)=\infty$ when no goal is reachable.  For a candidate $t$, let
+$E_{\mathrm{C}}(t)$ be the set of edges in the current belief that fire $t$.
+The best score over those edges is
+\[
+  \mathit{best}(t)=
+  \min\Bigl(
+    \min_{\substack{e\in E_{\mathrm{C}}(t)\\ d(e)=0}}
+      \bigl(1+\tierpen(\operatorname{tier}(e))\bigr),\;
+    \min_{e=(s,t,s')\in E_{\mathrm{C}}(t)}
+      \bigl(1+\dist(s')\bigr)
+  \Bigr),
+\]
+where the first minimum covers an uncovered edge at the belief itself and the
+second covers a goal reached through the candidate.
+
+\subsection{Robustness and hazard}
+
+Let $B$ be the current belief set and let $E_{\mathrm{C}}(t)$ be the enabling
+edges of $t$ in $B$.  The \emph{enabled fraction} is
+\[
+  \rho_{\mathrm{en}}(t)=\frac{|\{s\in B:t\text{ is enabled in }s\}|}{|B|}.
+\]
+For each enabling edge $e=(s,t,s')$, look at the environment moves out of
+$s$; with $\omega$ the offered/taken weight and
+$\mathbb{1}_{t}(s'')$ the indicator that $t$ is enabled after the environment
+move to $s''$, define
+\[
+  \sigma(e)=
+  \frac{\sum_{e'\in E_{\mathrm{O}}(s)}\omega(e')\,
+        \mathbb{1}_{t}(\tau(e'))}
+       {\sum_{e'\in E_{\mathrm{O}}(s)}\omega(e')},
+\]
+with $\sigma(e)=1$ when the denominator is zero.  The \emph{stability} is the
+mean of $\sigma$ over $E_{\mathrm{C}}(t)$, and the \emph{robustness} is
+\[
+  \mathrm{rob}(t)=\rho_{\mathrm{en}}(t)\cdot
+  \frac{1}{|E_{\mathrm{C}}(t)|}\sum_{e\in E_{\mathrm{C}}(t)}\sigma(e).
+\]
+The \emph{hazard} is the fraction of enabling edges whose target is
+forbidden:
+\[
+  \mathrm{haz}(t)=
+  \frac{|\{e\in E_{\mathrm{C}}(t):\cls(\tau(e))=\mathsf{Forbidden}\}|}
+       {|E_{\mathrm{C}}(t)|}.
+\]
+
+\subsection{The effective score}
+
+With the pheromone sums
+\[
+  A(t)=\sum_{e\in E_{\mathrm{C}}(t)}a(e),\quad
+  R(t)=\sum_{e\in E_{\mathrm{C}}(t)}r(e),\quad
+  G(t)=\sum_{e\in E_{\mathrm{C}}(t)}g(e),
+\]
+and the corresponding pair sums $A^{+}(t),R^{+}(t)$ taken over the arrival
+contexts of the edges, the suggester's \emph{effective score} is
+\[
+  \mathrm{eff}(t)=
+  \mathit{best}(t)
+  + \rho_{\mathrm{risk}}\bigl(1-\mathrm{rob}(t)\bigr)
+  + h_{\mathrm{haz}}\,\mathrm{haz}(t)
+  + w_{\mathrm{rep}}\frac{R(t)+G(t)+R^{+}(t)}{|E_{\mathrm{C}}(t)|\Tau}
+  - w_{\mathrm{att}}\frac{A(t)+A^{+}(t)}{|E_{\mathrm{C}}(t)|\Tau},
+  \label{eq:suggester}
+\]
+with defaults $\rho_{\mathrm{risk}}=2.0$, $h_{\mathrm{haz}}=20.0$,
+$w_{\mathrm{rep}}=3.0$ and $w_{\mathrm{att}}=1.0$.  The candidate with the
+smallest effective score is suggested; ties are broken by higher robustness,
+then by a deterministic transition order (or a seeded random choice when a
+tie-break seed is configured).  The pheromone terms are scaled by
+$|E_{\mathrm{C}}(t)|\Tau$, so a full-strength channel on every enabling edge
+contributes exactly the configured weight in steps.
+
+\begin{remark}
+Equation~\eqref{eq:suggester} is the coupling between the two halves of the
+heuristic.  The ants learn on the model; the suggester spends that knowledge
+on the next real input.  The static off-target channel $G(t)$ enters with the
+repellent pheromone, so an input whose every belief edge leads into the
+off-target region is as unattractive as one that leads into a catastrophe.  A
+hard veto can still refuse a candidate whose every effect is forbidden; the
+phase policy \texttt{veto} is the default.
+\end{remark}
+
+\section{Parameters and correspondence to the implementation}\label{sec:implementation}
+
+\subsection{Default parameters}
+
+\begin{center}
+\small
+\begin{tabular}{@{}llr@{}}
+\toprule
+Symbol & Meaning & Default \\
+\midrule
+$n_{\mathrm{ants}}$ & ants per iteration & 20 \\
+$\mathit{steps}$ & steps per ant & 40 \\
+$B_{\mathrm{exp}}$ & markings expanded per iteration & 200 \\
+$D$ & back-propagation depth & 5 \\
+$\gamma$ & depth decay & 0.7 \\
+$\alpha,\beta,\lambda$ & attract, novelty, repel exponents & 1, 1, 1 \\
+$\varepsilon_a$ & attractive evaporation per iteration & 0.10 \\
+$\varepsilon_r$ & repellent evaporation per iteration & 0.02 \\
+$3.0$ & catastrophe deposit (ants) & 3.0 \\
+$2.0$ & target deposit & 2.0 \\
+$1.0$ & unexplored deposit & 1.0 \\
+$1.5$ & milestone deposit per rank & 1.5 \\
+$\rho$ & off-target repel & 1.0 \\
+$\Tau$ & pheromone cap & 10.0 \\
+$p_{\mathrm{env}}$ & environment-move probability & 0.5 \\
+$N$ & T-suffix length & 0 (off), max 8 \\
+$\theta$ & coverage threshold & 1 \\
+$\rho_{\mathrm{risk}}$ & suggester risk weight & 2.0 \\
+$h_{\mathrm{haz}}$ & suggester hazard weight & 20.0 \\
+$w_{\mathrm{att}},w_{\mathrm{rep}}$ & suggester pheromone weights & 1.0, 3.0 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Symbols and code}
+
+\begin{center}
+\small
+\begin{tabular}{@{}p{0.28\linewidth}p{0.62\linewidth}@{}}
+\toprule
+Mathematics & Implementation (\texttt{src/}) \\
+\midrule
+$N=(P,T,F,I,w,\beta,\ell,\kappa)$ & \texttt{model/Net.h}, \texttt{NetBuilder} \\
+$M\fir{t}M'$ & \texttt{engine/Semantics.cpp}: \texttt{isEnabled}, \texttt{fire} \\
+$\kind(M)$, $\models_{\mathsf{exact}}$, $\models_{\mathsf{covers}}$ &
+\texttt{engine/Semantics.cpp}: \texttt{classify}, \texttt{matches} \\
+$G_{\mathrm{exp}}$, frontier, incomplete &
+\texttt{engine/ReachabilityGraph.h} \\
+$d(e)$, $\theta$, $\nu(e)$ & \texttt{engine/CoverageDb.h},
+\texttt{isSaturatedEdge} \\
+$\cls(s)$, target phases & \texttt{engine/TargetBoard.h} \\
+$\Off$, $g(e)$ & \texttt{engine/AntColony.cpp}:
+\texttt{refreshOffTargetRegionIfGrown}, \texttt{region} \\
+$a(e),r(e)$ & \texttt{engine/AntColony.h}: \texttt{attract}, \texttt{repel} \\
+$\wgt(e)$, the two-step draw & \texttt{AntColony::weight}, \texttt{AntColony::choose} \\
+deposits and back-propagation & \texttt{AntColony::deposit},
+\texttt{ReverseIndex::backwardWalk} \\
+T-suffix, $\mix$, pair store & \texttt{engine/TSuffix.h},
+\texttt{AntColony::pairAttract} \\
+$\mathrm{eff}(t)$ & \texttt{engine/Suggester.cpp}, \texttt{Suggester::suggest} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{What is not in this document}
+
+The document defines the model and the exploration heuristic, not the testing
+theory around them.  The plug-in wire protocol, the run log format, the
+post-mortem machinery, the crash-credibility experiment, the temporal-logic
+open item and the command hooks are described in \texttt{journal.md} and
+\texttt{docs/PLUGIN\_PROTOCOL.md}.  The publication is intentionally
+implementation-faithful: the defaults and the edge cases quoted here are the
+ones in the source at \texttt{v0.0.6}.  If a definition here and the code ever
+disagree, the code is the ground truth and this document should be corrected.
+
+\section{Conclusion}
+
+We have given a compact mathematical account of the two layers that make
+\texttt{eggembt} more than a random walk: a typed, weighted, bounded Petri net
+with target annotations and a lazily explored reachability graph; and an ant
+colony whose edge weights combine attractive pheromone, repellent pheromone, a
+static off-target region, novelty and an optional trace-suffix memory.  The
+off-target region is the set of expanded markings from which no target,
+sought fault or unknown territory is reachable; it is reward-inaccessible and
+closed under successors, and its incoming edges carry a fixed repulsion.  The suggester then turns the colony's
+learned channels into a one-step score for the live SUT.  The definitions are
+deliberately small enough to check against the implementation, and every
+symbol has a named counterpart in the source.
+
+\bibliographystyle{plain}
+\bibliography{references}
+
+\end{document}

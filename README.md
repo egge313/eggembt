@@ -472,7 +472,7 @@ reported step leaves it.
 The suite stands at **15 CTest entries** — 14 unit suites plus `cli_test.sh`
 (29 scenarios) — all green.
 
-### GLM-5.3-Flash — backtraces in the report, the nontarget region
+### GLM-5.3-Flash — backtraces in the report, the off-target region
 
 Two closures that end §12 (both documented with the item quoted verbatim in
 `journal.md` §15):
@@ -487,12 +487,12 @@ renders as `...` with a legend; transition-level-only coverage says so instead
 of guessing a chain. Tested in `cli_test.sh`
 (`run-log-continues-and-reports`).
 
-**The nontarget region** (§12 item 5). States from which no target marking is
+**The off-target region** (§12 item 5). States from which no target marking is
 reachable — a run that wanders in can never legitimately leave — now form a
 further repellent region in the ant colony, alongside the catastrophes. The
 colony recomputes it whenever the graph grows (reverse walk from target
 markings, still-sought targets and unknown territory; everything else is the
-region) and **sets** `nontargetRepel` (1.0, 0 = off) on every edge into it —
+region) and **sets** `offTargetRepel` (1.0, 0 = off) on every edge into it —
 never accumulated, never evaporated, deliberately modest so uncovered
 behaviour inside the region can still win. The colony's input weight and the
 suggester's repel term both carry it; with the ants switched off it does
@@ -512,9 +512,10 @@ all green.
 Three things in one batch, documented in full in `journal.md` §16:
 
 **The rename.** "Final marking" reads like net-theory's final state, but the
-concept is the tester's *target* — so `final`/`nofinal` became
-`target`/`nontarget` everywhere: identifiers (`targetMarkings`,
-`StateKind::Target`, `goodTarget`, `nontargetRepel`, …), the model-JSON key
+concept is the tester's *target* — so `final`/`nofinal` became the target
+pair — `target` and, as it is now called, `off-target` — everywhere:
+identifiers (`targetMarkings`, `StateKind::Target`, `goodTarget`,
+`offTargetRepel`, …), the model-JSON key
 `$.markings.target` (files with the old `"final"` key load with a warning and
 no target markings), the output ("the good target marking 'X' was reached",
 "N target,"), the docs, and the test names. Kept on purpose: the help line
@@ -931,3 +932,47 @@ The suite stands at **19 CTest entries** — 18 unit suites (300 tests;
 `tst_ants` 24, `tst_pheromone` 3, `tst_comm10k` 1) plus `cli_test.sh` (42
 scenarios, +`evaporate-restored-pheromones`) — all green. `eggembt version`
 prints `v0.0.5`.
+
+### DeepSeek V4.1 Flash — v0.0.6: the plug-in guide and the exploration argument
+
+The plug-in documentation now answers the two questions a wrapper author
+actually has. `docs/PLUGIN_PROTOCOL.md` points at the complete worked example
+(`examples/agents/ref_agent.cpp`, a hand-written coffee machine behind the
+generic `AgentServer`) and at `eggembt agent-sim`, and its new "Missing or
+extra messages" table says what the tracker does when a message never
+arrives or when the agent sends something it did not ask for. The user
+manual carries the short form in §8.2: a missing start answer or input
+acknowledgement aborts, a missing output becomes a deviation (or an idle
+timeout without quiescence), an unknown observed event is a deviation, an
+unsolicited stimulus is ignored as Preempted, and an overflowing event queue
+aborts rather than losing history.
+
+The user manual's introduction now states the exploration argument in plain
+words: a random walk over a model is blindfolded and revisits what it has
+already seen; coverage bookkeeping is the baseline; the ant colony adds
+memory through attractive and repellent pheromone; and targets, error states
+and milestones add intent. §12 still lists where those heuristics stop
+helping.
+
+Temporal logic over places — `p1 IMPLIES EVENTUALLY p2`, `ALWAYS p3` — is
+recorded as the next open item in `journal.md` §35, with the semantics that
+must be fixed (universal vs existential, finite runs, belief ambiguity,
+fairness) and a small first increment. It is not implemented.
+
+The terminology is now **off-target** and **off-target region** everywhere in
+code and living documentation: `AntConfig::offTargetRepel` and
+`AntColony::refreshOffTargetRegionIfGrown` replace the older spellings,
+`userdoc.md` §5 and §7.1 and the glossary use the new word, and
+`journal.md` §36 records the rename beside §16's earlier one. The computation,
+the value 1.0, the model format and every output string are unchanged.
+
+A new `publication/` directory carries a LaTeX paper, *A Formal Account of
+Petri-Net Model-Based Testing with an Off-Target-Aware Ant Colony*
+(`publication/main.tex`, `publication/references.bib`), with the net, the
+explored reachability graph, coverage and target board, the off-target region,
+the pheromone equations, the T-suffix recurrence and the suggester score
+written as definitions rather than prose. `publication/README.md` gives the
+build command.
+
+The suite is unchanged: **19 CTest entries**, 18 unit suites (300 tests) and
+42 CLI scenarios, all green. `eggembt version` prints `v0.0.6`.

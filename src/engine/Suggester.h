@@ -40,7 +40,7 @@
 //   pheromone   with an AntColony attached, the mean attractive pheromone over
 //               the input's edges (as a fraction of tauMax) lowers the score,
 //               the mean repellent pheromone raises it. The same means carry
-//               the static nontarget region with the repellent channel, and
+//               the static off-target region with the repellent channel, and
 //               -- with the T-suffix layer on -- the (marking, T-suffix) pair
 //               pheromone of the arrival context each edge would create,
 //               arrived at with the live run's trace extended by the edge's

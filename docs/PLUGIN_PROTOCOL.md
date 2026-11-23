@@ -237,6 +237,38 @@ connection to the SUT is gone, the tracker sent something unparseable
 without a word is also noticed — the closing connection is treated as a fault
 without a message — but a fault lets you say why.
 
+### Missing or extra messages
+
+"Missing" means a message never arrived; "extra" means the agent sent
+something the tracker did not ask for. Unknown **fields** are always ignored,
+so a newer agent may add fields safely; an unknown message **type** is an
+error. The tracker's reactions:
+
+| the agent ... | the tracker ... |
+| ------------- | --------------- |
+| never sends `hello` | refuses to start the session: "the agent did not say hello within N ms" (exit 3) |
+| never answers `start_run` | aborts the run: "the agent did not answer start_run in time" (10 s) |
+| never acknowledges a `stimulate` with a matching `stimulated` event | aborts the run after `--ack-timeout` (default 5 s): "the plug-in never reported the input it was asked to send" |
+| sends no `observed` event and no `quiescent` event while an output is due | aborts the run after `--idle-timeout` (default 10 s): "no event from the SUT ... although one was expected" — the tracker has no clock of its own |
+| sends `quiescent` although every possible state requires an output | ends the run as `deviation`: "no output arrived, but the model requires one in every possible state" |
+| sends `quiescent` while only some possible states are quiet | narrows the belief to those states; if all of them are model dead ends the run ends as `deadlock`, otherwise it continues |
+| lets the SUT die without sending `Died` | a closed connection is a fault; an in-process plug-in that stays silent trips the idle timeout instead of producing `sut_crashed` |
+| reports an `observed` label the model does not know | ends the run as `deviation`: "observed \"x\", which the model does not know" (the expected labels are listed) |
+| reports an `observed` label that exists but is not enabled in any possible belief state | ends the run as `deviation`: "observed \"x\", which is not possible in any possible state" |
+| reports an unsolicited `stimulated` event, or duplicates one | treats it as Preempted: the belief is unchanged, it is not a fault, and the run continues |
+| sends an extra `quiescent` event | same narrowing as above; a spurious report can therefore narrow the belief or produce a wrong deadlock, but never a silent ignore |
+| sends events of an older run, or anything after `stop_run` | drops them |
+| floods the queue so that an event cannot be stored | aborts the run: "event queue overflow: events were lost" — an event is never dropped silently |
+| never answers `post_mortem` | waits 60 s, then records "post-mortem failed: the agent did not deliver the post-mortem in time"; a snapshot run continues without a dump, a crash request may still end the run |
+| advertises `snapshot` or `crash` in `hello` but cannot deliver it | the request fails (or falls back to a snapshot when a crash was asked and snapshots were advertised); the run notes the failure |
+| sends an unknown message type | treats it as a fault and aborts the run |
+| sends unknown fields in a known message | ignores them |
+
+The `Died` row is the one most easily missed: a death that is never reported
+looks exactly like a hung SUT until a timeout fires. The queue row is the
+opposite: the tracker refuses rather than lose an event and continue with a
+false history.
+
 ## 4. A run, line by line
 
 Using the drink machine of `examples/drink-machine.json` (left column: agent,
@@ -278,6 +310,12 @@ so event number 2 is held):
 ```
 
 ## 5. Checklist for agent authors
+
+`examples/agents/ref_agent.cpp` is a complete worked wrapper around a
+hand-written coffee machine: the SUT, its `ISutPlugin`, the generic
+`AgentServer` and the transport, end to end. `eggembt agent-sim MODEL` is a
+ready-made agent around the built-in simulator. Keep the "Missing or extra
+messages" table above at hand while adapting either one.
 
 1. One JSON object per line, flushed immediately, over any byte transport.
    Ignore unknown fields; treat unknown message types as an error and say so

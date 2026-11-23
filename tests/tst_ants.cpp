@@ -635,7 +635,7 @@ static void testPheromoneSteersTheSuggester()
 }
 
 // ---------------------------------------------------------------------------
-// GLM-5.3-Flash: the nontarget region (doku section 12 item 5)
+// GLM-5.3-Flash: the off-target region (doku section 12 item 5)
 // ---------------------------------------------------------------------------
 
 // GLM-5.3-Flash: states from which no target marking is reachable are a
@@ -697,7 +697,7 @@ static void testStatesWithoutATargetMarkingRepel()
 
     {   // Switched off, the region says nothing.
         AntConfig cfg;
-        cfg.nontargetRepel = 0.0;
+        cfg.offTargetRepel = 0.0;
         AntColony quiet(rg, db, cfg);
         quiet.iterate({});
         CHECK(near(quiet.region(eb), 0.0));
@@ -788,7 +788,7 @@ static void testTheRegionSteersTheSuggester()
     {   // Region switched off: the plain tie-break again.
         CoverageDb db(rg);
         AntConfig cfg;
-        cfg.nontargetRepel = 0.0;
+        cfg.offTargetRepel = 0.0;
         AntColony colony(rg, db, cfg);
         colony.iterate({});
         CHECK(near(colony.region(ex), 0.0));

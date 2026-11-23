@@ -59,7 +59,9 @@ void AntColony::ensure()
             stepHashes_.push_back(stepHashOf(rg_.net().transitions[i]));
 }
 
-// GLM-5.3-Flash: the nontarget region (doku section 12 item 5). Recomputed
+// DeepSeek V4.1 Flash: renamed to `off-target` in journal §36; the computation
+// is unchanged.
+// GLM-5.3-Flash: the off-target region (doku section 12 item 5). Recomputed
 // only when the graph grew. The seeds are the states behind which a
 // legitimate end is KNOWN to exist or the future is unknown: states of kind
 // Target, states the board is still SEEKING (an error marking, a deadlock, a
@@ -68,9 +70,9 @@ void AntColony::ensure()
 // territory (an edge into an unexpanded state, or an incomplete expansion
 // cut off by the limits). Everything expanded that reaches none of the seeds
 // can never reach a target marking: the region. Every edge into it is SET to
-// nontargetRepel -- never accumulated, never evaporated; edges into unknown
+// offTargetRepel -- never accumulated, never evaporated; edges into unknown
 // territory stay clean.
-void AntColony::refreshNontargetRegionIfGrown()
+void AntColony::refreshOffTargetRegionIfGrown()
 {
     const std::size_t states = rg_.numStates();
     const std::size_t edges = rg_.numEdges();
@@ -80,7 +82,7 @@ void AntColony::refreshNontargetRegionIfGrown()
     regionStatesSeen_ = states;
     regionEdgesSeen_ = edges;
     region_.assign(edges, 0.0f);
-    if (cfg_.nontargetRepel <= 0.0 || rg_.net().targetMarkings.empty())
+    if (cfg_.offTargetRepel <= 0.0 || rg_.net().targetMarkings.empty())
         return;
 
     // The target phases decide which states are legitimate places to go;
@@ -124,7 +126,7 @@ void AntColony::refreshNontargetRegionIfGrown()
     for (EdgeId e = 0; e < edges; ++e) {
         const StateId target = rg_.edge(e).target;
         if (rg_.isExpanded(target) && !reached[target])
-            region_[e] = static_cast<float>(cfg_.nontargetRepel);
+            region_[e] = static_cast<float>(cfg_.offTargetRepel);
     }
 }
 
@@ -208,7 +210,7 @@ double AntColony::inputWeight(EdgeId e, const TraceCascade &trace) const
 double AntColony::weight(EdgeId e, double extraAttract, double extraRepel) const
 {
     const double novelty = db_.isSaturatedEdge(e) ? 0.01 : 1.0 / (1.0 + static_cast<double>(db_.edge(e).definite));
-    // GLM-5.3-Flash: the static nontarget region rides with the learned repel
+    // GLM-5.3-Flash: the static off-target region rides with the learned repel
     // (doku section 12 item 5); `extra` carries the (marking, T-suffix) pair
     // layer (doku section 16), both channels in the same places.
     return std::pow(attract(e) + extraAttract + 0.1, cfg_.alpha) * std::pow(novelty, cfg_.beta)
@@ -355,9 +357,9 @@ void AntColony::iterate(const std::vector<StateId> &starts, bool evaporate)
 {
     ++stats_.iterations;
 
-    // GLM-5.3-Flash: keep the static nontarget region current before anything
+    // GLM-5.3-Flash: keep the static off-target region current before anything
     // walks or chooses (a no-op unless the graph grew).
-    refreshNontargetRegionIfGrown();
+    refreshOffTargetRegionIfGrown();
 
     if (!starts.empty()) {
         board_.refresh();

@@ -37,8 +37,8 @@ system makes your pile of test scripts older and wronger.
 the system should behave — once, precisely, as a small machine. This
 description is called the **model**. A tool then does two jobs with it:
 
-1. It **analyzes the model itself**, finding dead ends and traps in your
-   description before you ever touch the real system.
+1. It **analyzes the model itself**, finding dead ends and terminal cycles in
+   your description before you ever touch the real system.
 2. It **generates and executes tests against your real system** (or a
    simulation of it), driving it through sequence after sequence of
    interactions and checking *every event* against the model. Anything the
@@ -48,6 +48,20 @@ description is called the **model**. A tool then does two jobs with it:
 
 Your effort goes into one model instead of hundreds of scripts, and the tool
 explores systematically instead of following your hunches.
+
+A model alone is not yet a strategy. The simplest way to explore one is a
+blind walk: take an enabled move at random, record what happened, restart,
+repeat. That walk is blindfolded with respect to coverage — it carries no
+memory of where it has been, so it keeps returning to the same easy states
+and edges while a deep branch waits. eggembt's baseline is one step better:
+it records coverage per state, edge and transition and plans toward the
+nearest uncovered item. The ant colony adds memory — attractive pheromone
+marks routes that led to something new or to a declared goal, repellent
+pheromone marks catastrophes, and evaporation lets stale lessons fade.
+Targets, error states and milestones add intent: they say what "worth
+reaching" means, not only "not seen yet". The rest of this manual separates
+those layers: §5 defines the targets, §7 the colony, §8.5 the strategy, and
+§12 where the heuristics stop helping.
 
 In eggembt the model is a **Petri net** (§2), the tool is the command
 `eggembt`, and the "system under test" — SUT for short — can be your real
@@ -294,11 +308,14 @@ like?* The tool computes it by playing out the model on paper:
 
 The result is a graph:
 
-- one **state** per reachable marking ("reachable" = can happen, starting
-  from the start, by *some* sequence of moves — hence the name);
+- one **node** per reachable marking ("reachable" = can happen, starting
+  from the start, by *some* sequence of moves — hence the name); a marking is
+  the Petri-net word for a state of the model;
 - one **edge** per possible firing, labelled with the transition that fires.
 
-The reachability graph is the complete map of the model's behaviour. Every
+The reachability graph is the complete map of the model's behaviour. In
+Petri-net terminology it is also called the model's **state space**: the two
+names mean the same graph, whose nodes are the reachable markings. Every
 question of the form "can the model end up in situation X?" has a definite
 answer in it.
 
@@ -309,10 +326,10 @@ answer in it.
 - **Deadlocks** — states where *nothing* can fire any more. The machine is
   stuck by definition. In `drink-machine` there are none; in a model where a
   place can deadlock (say, a card swallowed with no way out) the count is
-  the number of such traps.
+  the number of such dead ends.
 - **Terminal cycles without a target marking (livelocks)** — a *cycle* of
-  states that the model can enter but never legitimately leave: a trap the
-  specification itself can spin in forever. `examples/heartbeat-livelock.json`
+  states that the model can enter but never legitimately leave: a closed loop
+  the specification itself can spin in forever. `examples/heartbeat-livelock.json`
   contains exactly one, and `check` warns about it:
 
   ```
@@ -417,11 +434,11 @@ reported as an error, because there is nothing left that counts as a
 legitimate end.
 
 Targets have a complement. Egge's open item said (quoted in its original
-wording; the concept is now spelled "nontarget" after the rename):
+wording; the concept is now spelled "off-target" after the rename):
 
 > 5. Optionally, states from which no final marking is reachable as a further repellent region.
 
-That is the **nontarget region**: states from which no target marking is
+That is the **off-target region**: states from which no target marking is
 reachable any more. Whatever wanders in there can never come out to a
 legitimate end — a run that enters has to be restarted. The colony sets a
 modest repellent pheromone on every edge into the region (it is *set*, never
@@ -677,7 +694,8 @@ expanded; a cut-off frontier from `--max-states` is never mistaken for one
 clean model), `explore` lists the states, and both do this before any SUT is
 touched. A static finding is model advice, not a run failure: `check`
 returns 0. The campaign turns **all** deadlocks of the graph into **one**
-target, because a dump and a restart are expensive whichever trap is reached.
+target, because a dump and a restart are expensive whichever dead end is
+reached.
 `--deadlock-policy` defaults to `once`: the campaign steers into a deadlock
 once to confirm the SUT can reach it, then marks its states forbidden and
 plans around it (§8.5). Only if the SUT is quiescent exactly in such an
@@ -743,7 +761,7 @@ transition is a deadlock, not a livelock; a single state with a self-loop
 
 The finding means "the specification permits endless behaviour that never
 reaches a declared legitimate end". That can be a modelling mistake or a
-deliberate trap. The campaign warns only about **certain** findings: the
+deliberate design. The campaign warns only about **certain** findings: the
 analysis works on the explored graph, and a component is uncertain when one
 of its states is incomplete or had a firing dropped by a place bound. An edge
 into an unexpanded state counts as an exit, so a component next to unexplored
@@ -752,13 +770,13 @@ marks the uncertain ones "not certain: exploration was incomplete".
 
 For the campaign, each certain terminal cycle is a **livelock target** of its
 own. `--livelock-policy` defaults to `once`: seek a definite visit, then
-forbid the states. This is coverage of a known trap, not a verdict about the
+forbid the states. This is coverage of a known terminal cycle, not a verdict about the
 SUT; a run that enters the cycle and follows it is still doing exactly what
 the model allows. If the reachable graph is one strongly connected component
 and declares no target at all, the whole graph is one terminal cycle (the
 exception is a single dead state, which is the deadlock case) — which is why
 that warning is so common. An initial marking inside such a cycle gets its
-own warning: every run starts in the trap and cannot avoid it.
+own warning: every run starts in the cycle and cannot avoid it.
 
 **SUT livelock.** The run-time form is a judgement about one run: the SUT
 keeps producing events, but nothing in the run progresses. It is off by
@@ -896,7 +914,7 @@ eggembt runs such a colony over the reachability graph. Every iteration
 chooses among the edges by a weight that mixes three things:
 
 - **pheromone** — the attract channel raises an edge's weight; the repel
-  channel and the static nontarget region lower it;
+  channel and the static off-target region lower it;
 - **novelty** — *unexplored territory smells interesting*: every edge's
   weight carries its own novelty, `1/(1 + hits)` (0.01 when the edge is
   saturated), and an ant that reaches a state with an uncovered outgoing edge
@@ -929,7 +947,7 @@ What the ants find changes the landscape the next real run is steered by:
 - **milestones** deposit 1.5 × rank (§2.3), once per definitely credited
   step — a success on the way, not an end;
 - **catastrophes** repel, priced by the way in (§6.10);
-- the **nontarget region** is set to 1.0 on every edge into it (§5);
+- the **off-target region** is set to 1.0 on every edge into it (§5);
 - **back-propagation** marks the way *in* to any of these — at least the
   previous 5 nodes, fading by 0.7 per step of distance — so the approach to
   a good state is advertised, not just the state itself;
@@ -1211,6 +1229,40 @@ at a marked event until the tracker acknowledges it. `--simulate` and
 `eggembt agent-sim` can do this; an agent that cannot keeps the run
 unsynchronized, and the run notes why. The model marks the events with
 `"sync": true` and the campaign opts in with `--sync-events` (§2.3, §8.3).
+
+**What a plug-in must contain.** An agent is a process that speaks the line
+protocol in `docs/PLUGIN_PROTOCOL.md`: it sends `hello`; answers `start_run`
+with `run_started`; acknowledges every `stimulate` with a `stimulated`
+event; reports everything the SUT does that the model names as `observed`
+events, in capture order; sends one `quiescent` event after the run's
+silence timeout; sends exactly one `Died` if the SUT dies on its own; answers
+`post_mortem`; and cleans up on `stop_run`/`shutdown`.
+`examples/agents/ref_agent.cpp` is a complete worked wrapper around a
+hand-written coffee machine (built on the generic `AgentServer`), and
+`eggembt agent-sim MODEL` serves the built-in simulator behind the same
+protocol. In-process plug-ins implement `ISutPlugin`
+(`src/engine/SutPlugin.h`) instead. The protocol document's §5 is the
+author's checklist.
+
+**Missing or extra events.** The tracker treats a missing report and an
+unexpected report differently. The full table is in
+`docs/PLUGIN_PROTOCOL.md` §3, under "Missing or extra messages"; in short:
+
+| the plug-in ... | the tracker ... |
+|---|---|
+| never answers `start_run` | aborts the run ("did not answer start_run in time") |
+| never acknowledges a `stimulate` | aborts after `--ack-timeout` (default 5 s) |
+| reports neither output nor quiescence while output is due | aborts after `--idle-timeout` (default 10 s) |
+| reports quiescence although every possible state requires output | ends as `deviation`: "no output arrived ..." |
+| reports an unknown or disabled observed event | ends as `deviation`, naming the expected labels |
+| reports an unsolicited or duplicate stimulated event | ignores it as preempted; the belief is unchanged and the run continues |
+| reports an extra quiescent event | narrows the belief to the quiet states; if they are all dead ends, the run is a `deadlock` |
+| lets the SUT die without a `Died` event | a closed transport is a fault; otherwise the silence trips the idle timeout |
+| never answers `post_mortem` | waits 60 s, records the failure; a snapshot run continues without a dump, a crash request still ends the run |
+| reports events of an older run or after `stop_run` | drops them |
+| floods the event queue | aborts the run ("event queue overflow: events were lost") |
+| sends unknown fields | ignores them (the protocol may grow) |
+| sends an unknown message type | treats it as a fault and aborts |
 
 ### 8.3 The options, with their defaults
 
@@ -1921,7 +1973,7 @@ What the number is **not**:
 | **target marking** | a situation the campaign seeks; **intentional** ones end the campaign successfully (§5) |
 | **target phase** | `seeking` while a target is still a goal; `satisfied` (matured, meaning its "visited N times" criterion is reached) once its policy count is reached, after which its states are forbidden (§8.5) |
 | **phase veto** | the suggester's default refusal to move into a satisfied target; `--satisfied-target-policy` relaxes it (§8.5) |
-| **nontarget region** | states from which no target marking is reachable — a repellent region (§5) |
+| **off-target region** | states from which no target marking is reachable — a repellent region (§5) |
 | **error marking / error transition** | a declared forbidden situation / step (§6.2, §6.3) |
 | **deviation** | an event the model cannot explain (§6.4) |
 | **quiescence** | "nothing more will come" — reported after `--quiescence` ms of silence |

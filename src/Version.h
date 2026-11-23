@@ -21,6 +21,10 @@
 // sparing matured targets and errors (journal §34). The rule for this file:
 // the version is the git branch name, and `main` is the exception because its
 // name is not a version.
+//
+// v0.0.6 (23 November 2026): the plug-in guide's missing/extra-message rules,
+// the exploration introduction in the user manual, and the temporal-logic
+// open item (journal §35).
 #pragma once
 
-#define EGGEMBT_VERSION "v0.0.5"
+#define EGGEMBT_VERSION "v0.0.6"

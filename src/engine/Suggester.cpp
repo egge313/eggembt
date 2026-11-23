@@ -301,7 +301,7 @@ Suggestion Suggester::suggest(const BeliefTracker &tracker)
         double stableSum = 0.0;
         double attractSum = 0.0;
         double repelSum = 0.0;
-        double regionSum = 0.0;   // GLM-5.3-Flash: the static nontarget region
+        double regionSum = 0.0;   // GLM-5.3-Flash: the static off-target region
         double pairAttractSum = 0.0;  // GLM-5.3-Flash: the (marking, T-suffix) pairs
         double pairRepelSum = 0.0;
         std::uint32_t best = kInf;
@@ -389,7 +389,7 @@ Suggestion Suggester::suggest(const BeliefTracker &tracker)
                            + cfg_.hazardWeight * hazard;
         if (ants_ && ants_->tauMax() > 0.0) {
             const double scale = edgeCount * ants_->tauMax();
-            // GLM-5.3-Flash: the static nontarget region rides with the
+            // GLM-5.3-Flash: the static off-target region rides with the
             // repellent pheromone (doku section 12 item 5), and the (marking,
             // T-suffix) pair pheromone rides in the same two places (doku
             // section 16).

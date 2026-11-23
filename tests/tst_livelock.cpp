@@ -36,7 +36,7 @@ static StateId findState(const ReachabilityGraph &g, const Marking &m)
 }
 
 // p -> q, and q <-> r form a cycle that cannot be left.
-static Net makeTrapNet(bool targetInCycle)
+static Net makeCycleNet(bool targetInCycle)
 {
     NetBuilder b;
     const auto p = b.place("p");
@@ -60,7 +60,7 @@ static Net makeTrapNet(bool targetInCycle)
 
 static void testSccDecomposition()
 {
-    const Net net = makeTrapNet(false);
+    const Net net = makeCycleNet(false);
     ReachabilityGraph g(net);
     g.addInitial(0);
     g.exploreAll();
@@ -84,7 +84,7 @@ static void testSccDecomposition()
 
 static void testTerminalCycleIsALivelock()
 {
-    const Net net = makeTrapNet(false);
+    const Net net = makeCycleNet(false);
     ReachabilityGraph g(net);
     g.addInitial(0);
     g.exploreAll();
@@ -102,7 +102,7 @@ static void testTerminalCycleIsALivelock()
 
 static void testCycleWithTargetMarkingIsLegitimate()
 {
-    const Net net = makeTrapNet(true);
+    const Net net = makeCycleNet(true);
     ReachabilityGraph g(net);
     g.addInitial(0);
     g.exploreAll();
