@@ -25,6 +25,10 @@
 // v0.0.6 (23 November 2026): the plug-in guide's missing/extra-message rules,
 // the exploration introduction in the user manual, and the temporal-logic
 // open item (journal §35).
+//
+// v0.0.7 (24 November 2026): publication renamed to kettunen2026.tex, with
+// abstract algorithms for graph generation, ant movement, pheromone setting
+// and event selection (journal §38).
 #pragma once
 
-#define EGGEMBT_VERSION "v0.0.6"
+#define EGGEMBT_VERSION "v0.0.7"

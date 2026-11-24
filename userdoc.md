@@ -6,16 +6,18 @@
 
 This file has been mostly written by two AIs, GLM-5.3-Flash and
 DeepSeek V4.1 Flash. The original draft and a preliminary
-implementation for the eggembt program was written by yet another Ai,
-Claude Sonnet, and later worked on by GLM and DeepSeek, all of based
-on Egge's ideas and prompts. The software and documentation have been
-reviewed by Egge.
+implementation for the eggembt program were written by yet another AI,
+Claude Sonnet 5.5 Medium, and later worked on by GLM and DeepSeek. All
+of the work is based on Egge's ideas and prompts, though. The software
+and documentation have been reviewed by Egge.
 
-First version of this manual was written on 17 November 2026.
+The first version of this manual was written on 17 November 2026.
 
-This manual is a recompilation of the daily records
-documented in `journal.md` §16. Read `README.md` for a short overview and
-`journal.md` for the design record. Two conventions:*
+The manual was originally a recompilation of the daily records
+documented in `journal.md`. Also read `README.md` for a short
+overview, and `INSTALL.md` for installation instructions.
+
+Two conventions:*
 
 - *Every blockquote (`>`) in this manual is a text Egge actually sent, quoted
   byte for byte. Nothing is invented; the explanations around the quotes are
@@ -25,15 +27,16 @@ documented in `journal.md` §16. Read `README.md` for a short overview and
 
 ---
 
-## 1. What model-based testing is
+## 1. What is model-based testing?
 
-When you test a piece of software the traditional way, you write **test
-cases** by hand: step 1, press this; step 2, expect that. Two problems come
-with that. First, you only ever test what you happened to think of — the
-paths you did not think of stay untested forever. Second, every change to the
-system makes your pile of test scripts older and wronger.
+When you test a piece of software in the traditional way, you write
+**test cases** by hand: step 1, press this; step 2, expect that. Two
+problems arise. First, you only ever test what you happened to think
+of — the paths you did not think of stay untested forever. Second,
+every change to the system makes your pile of test scripts older and
+wronger.
 
-**Model-based testing** turns this around. Before testing, you write down how
+**Model-based testing** takes another approach. Before testing, you write down how
 the system should behave — once, precisely, as a small machine. This
 description is called the **model**. A tool then does two jobs with it:
 
@@ -49,7 +52,7 @@ description is called the **model**. A tool then does two jobs with it:
 Your effort goes into one model instead of hundreds of scripts, and the tool
 explores systematically instead of following your hunches.
 
-A model alone is not yet a strategy. The simplest way to explore one is a
+However, a model alone is not yet a strategy. The simplest way to explore the model is a
 blind walk: take an enabled move at random, record what happened, restart,
 repeat. That walk is blindfolded with respect to coverage — it carries no
 memory of where it has been, so it keeps returning to the same easy states
@@ -63,10 +66,16 @@ reaching" means, not only "not seen yet". The rest of this manual separates
 those layers: §5 defines the targets, §7 the colony, §8.5 the strategy, and
 §12 where the heuristics stop helping.
 
-In eggembt the model is a **Petri net** (§2), the tool is the command
+In eggembt the model is a low-level **Petri net** (§2), the tool is the command
 `eggembt`, and the "system under test" — SUT for short — can be your real
-program, or the built-in simulator that lets you try everything without any
+program, a device, or the built-in simulator that lets you try everything without any
 system at all.
+
+It should be noted that eggembt does not address data at all. However,
+it is possible to invoke data oriented tests via the command hooks
+(§9). For this reason eggembt is best applied in the testing of
+systems with concurrency or whenever the logical branching of system
+needs to be examined.
 
 ---
 

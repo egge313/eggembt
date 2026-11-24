@@ -1,10 +1,11 @@
 # A formal account of the Petri nets and the ant colony
 
-`main.tex` is a self-contained LaTeX article that defines, in mathematical
+`kettunen2026.tex` is a self-contained LaTeX article that defines, in mathematical
 terms, the Petri nets, reachability graph, coverage and target machinery, the
 off-target region, the ant-colony equations (including the T-suffix layer) and
-the suggester score used by `eggembt` at version `v0.0.6`.  The definitions
-follow the implementation; Section 6 maps every symbol to its source file.
+the suggester score used by `eggembt` at version `v0.0.7`.  The definitions
+follow the implementation; the final correspondence section maps every symbol
+to its source file.
 
 ## Build
 
@@ -12,20 +13,21 @@ A TeX distribution with `pdflatex` and `bibtex` is enough:
 
 ```sh
 cd publication
-pdflatex main.tex
-bibtex main
-pdflatex main.tex
-pdflatex main.tex
+pdflatex kettunen2026.tex
+bibtex kettunen2026
+pdflatex kettunen2026.tex
+pdflatex kettunen2026.tex
 ```
 
-The result is `main.pdf`.  With `latexmk` installed, one command does the same:
+The result is `kettunen2026.pdf`.  With `latexmk` installed, one command does the same:
 
 ```sh
-latexmk -pdf main.tex
+latexmk -pdf kettunen2026.tex
 ```
 
-The generated files (`main.aux`, `main.bbl`, `main.blg`, `main.log`,
-`main.out`, `main.toc`, `main.pdf`) are ignored by git; only the sources are
+The generated files (`kettunen2026.aux`, `kettunen2026.bbl`, `kettunen2026.blg`,
+`kettunen2026.log`, `kettunen2026.out`, `kettunen2026.toc`,
+`kettunen2026.pdf`) are ignored by git; only the sources are
 tracked.
 
 ## What the article covers
@@ -42,7 +44,10 @@ tracked.
   deposits, back-propagation, evaporation, the T-suffix recurrence and the
   pair channels;
 - the suggester's effective score and its coupling to the colony;
+- abstract algorithms for lazy graph generation, one ant's walk and choice,
+  pheromone deposition and evaporation, and event selection with and without
+  the colony;
 - a table of default parameters and a symbol-to-code table.
 
 The engineering history behind the definitions, including the rename to
-`off-target`, is in `journal.md` sections 16 and 36.
+`off-target`, is in `journal.md` sections 16, 36 and 38.

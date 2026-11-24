@@ -2705,3 +2705,98 @@ cross-references resolve, and the only remaining box warnings are underfull
 table cells.  The generated PDF is ignored; the sources are the deliverable.
 No C++ code changed in this step, so the suite and the version are untouched
 (`v0.0.6`).
+
+## 38. The paper renamed, with abstract algorithms (24 November 2026, DeepSeek V4.1 Flash)
+
+Egge asked for the rename and for the algorithms:
+
+> Rename the publication to kettunen2026.tex. Would it make sense writing the abstracted algorithms for RG generation, ant movement and pheromone setting, and event selection in the tracker (with the differences in the presence of pheromones or not)?
+
+### Rename and version
+
+The source moved with `git mv publication/main.tex
+publication/kettunen2026.tex`, and the build product is now
+`publication/kettunen2026.pdf`. The old generated `publication/main.*`
+artifacts were removed. `publication/.gitignore` ignores the new auxiliaries
+and PDF; `publication/README.md` carries the new `pdflatex`/`bibtex` commands,
+the new output name and the extended coverage list.
+
+The article's date line and its final correspondence section now name product
+version `v0.0.7`, the branch. `src/Version.h` defines `v0.0.7` with a new
+version-history comment; `cli_test.sh` expects `eggembt v0.0.7`; `INSTALL.md`
+shows the same. Section 37 above still says `main.tex` and `v0.0.6`; by the
+append-only rule those are historical, and this section is the record of the
+rename.
+
+### Abstract algorithms
+
+A new Section 6, "Abstract algorithms", turns the declarative definitions into
+the procedures a reader needs in order to reproduce a campaign. Algorithm 1
+remains the outer colony iteration; the new material is Algorithms 2--6:
+
+- **Algorithm 2, lazy graph generation.** Initial markings are inserted
+  unconditionally, even beyond the state cap; the cap governs only nodes
+  created by firing. Expansion walks the unexpanded nodes in identifier order,
+  which is breadth first because identifiers follow discovery order. A
+  firing that exceeds a place bound or overflows an unbounded place is
+  recorded as a bound violation and produces no edge. An engine-landed
+  lifecycle input with no output arcs increments the enabled count --- the
+  marking is not a dead end --- but creates no token-game edge. When the cap
+  prevents a successor, the source is flagged incomplete and the graph is
+  marked truncated.
+- **Algorithm 3, one ant's walk and choice.** The ant expands unexpanded
+  markings while the iteration's shared expansion budget lasts, then draws
+  between the controllable and environment pools with `p_env`, and within the
+  chosen pool with the edge weight. Input edges use
+  `(a + a⁺ + 0.1)^α ν^β exp(−λ(r + g + r⁺))`; environment edges use `ω`.
+  The walk stops after 40 steps, at a dead end, or when the arrival rule ends
+  it.
+- **Algorithm 4, the arrival rule.** A forbidden arrival deposits the
+  catastrophe amount into the repel channel and ends the ant; a seeking target
+  deposits the target amount into the attract channel and ends it. An
+  unexpanded marking is expanded while budget remains, otherwise deposited as
+  unexplored and ends the ant. A marking with an uncovered outgoing edge is
+  also a reason to stop. The static off-target region does not kill the ant.
+- **Algorithm 5, pheromone setting.** `Deposit` walks the predecessor index
+  backwards for `D = 5` levels and adds `A γ^d` at depth `d = 0..D−1`, capped
+  at `τ_max`. `PairDeposit` writes one `(marking, T-suffix)` pair flat.
+  `Evaporate` applies the attract and repel rates, wipes the attraction of
+  saturated edges even when the way in is spared, and spares the incoming
+  edges and pairs of a matured target. `RefreshRegion` resets the static
+  off-target channel after the graph grows.
+- **Algorithm 6, event selection.** The tracker supplies the belief, the
+  controllable candidates and the policy; the suggester selects. The
+  lifecycle gate is checked first; the optional rare hunt can return a dwell
+  or a wait for an unseen non-controllable rare transition with attempts
+  left. The algorithm then expands, refreshes the board and predecessor
+  index, seeds the backward goal costs and tiers, evaluates robustness and
+  hazard, applies the veto policy, adds the colony terms, restricts the pool
+  to rare goals when any is reachable, and breaks ties by robustness, goal
+  tier and transition order. A chosen controllable rare input with a positive
+  wait-for becomes a dwell.
+
+The "with and without pheromones" paragraph makes the switch explicit. With
+the colony (the default), one iteration runs on the current belief before
+selection and the colony contributes `A(t), R(t), G(t)` and, with the T-suffix
+layer on, `A⁺(t), R⁺(t)`. With `--no-ants`, no colony is attached and the
+conditional term in Algorithm 6 is omitted, leaving
+`eff_base(t) = best(t) + ρ_risk(1 − rob(t)) + h_haz · haz(t)`. Everything else
+--- belief, candidates, goal distance, robustness, hazard and the tie-break
+--- is identical.
+
+The algorithms are set with the `float` package's `[H]` placement and in
+`\footnotesize`, so each stays beside the section that introduces it rather
+than drifting to a later page.
+
+### Verification
+
+`pdflatex kettunen2026.tex`, `bibtex kettunen2026`, then `pdflatex` twice
+(TeX Live 2025) produces a 20-page PDF. All citations and cross-references
+resolve and there are no overfull boxes; the two remaining underfull-hbox
+warnings are the symbol-table cells that were already there.
+
+`cmake --build build -j2` succeeds. `ctest --test-dir build
+--output-on-failure -j2` passes 19/19 entries: 18 unit suites (300 tests) and
+`cli_test.sh`. A direct run of `cli_test.sh` reports 42 tests and 0 failures,
+and `build/eggembt version` prints `eggembt v0.0.7`. The changes are staged
+for Egge to commit and push.

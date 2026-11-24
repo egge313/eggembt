@@ -11,6 +11,7 @@
 \usepackage{enumitem}
 \usepackage{algorithm}
 \usepackage{algpseudocode}
+\usepackage{float}
 \usepackage{microtype}
 \usepackage[hidelinks]{hyperref}
 
@@ -52,32 +53,51 @@
 \newcommand{\fir}[1]{\xrightarrow{#1}}
 \newcommand{\bool}{\{0,1\}}
 
-\title{\textbf{A Formal Account of Petri-Net Model-Based Testing\\
-with an Off-Target-Aware Ant Colony}}
-\author{The \texttt{eggembt} project}
-\date{Draft of 23 November 2026 --- product version \texttt{v0.0.6}}
+\title{\textbf{Ant Colony Optimization for Coverage in Model-Based Testing}}
+\author{Esa Kettunen \\
+  Egge Collective \\
+  The \texttt{eggembt} project}
+\date{Draft of 24 November 2026 --- product version \texttt{v0.0.7}}
 
 \begin{document}
 
 \maketitle
 
 \begin{abstract}
-This document gives a mathematical account of the model and the exploration
-heuristic used by \texttt{eggembt}, a Petri-net model-based testing tool.  We
-define the class of nets the tool accepts (weighted arcs, inhibitor arcs,
-place bounds, typed and labelled transitions, several named initial markings,
-target and error markings, milestones, rare transitions and crash
-predictions), the lazy reachability graph---the state space of the net---the
-tool builds, the coverage and target machinery that turns the graph into a
-testing plan, and the ant-colony optimisation (ACO) that steers the plan.  The heuristic is
-presented as a stochastic process on the graph: two learned pheromone
-channels, one static \emph{off-target} channel, novelty weighting,
-back-propagating deposits, evaporation, and an optional finer store indexed
-by a marking together with a hash of the recent trace (a \emph{T-suffix}).
-The final section relates the suggester's score to the colony.  Every
-definition is taken from the implementation, not invented for the paper; the
-default parameters quoted here are the ones in the source at version
-\texttt{v0.0.6}.
+
+We give a mathematical account of the modelling language and
+exploration heuristic used by \texttt{eggembt}, a Petri-net tool for
+model-based testing, optimized for model coverage.  We define the
+class of nets the tool accepts (basically places with bounds, weighted
+arcs, inhibitor arcs), augmented with types and labels for transitions,
+several named initial markings, as well as target and error markings,
+milestones, rare transitions, and crash predictions. We also define
+the lazy reachability graph---the state space of the net---which the
+tool builds during testing, the coverage and target machinery that
+turns the graph into a testing plan, and the ant-colony optimisation
+(ACO) that steers the plan.  The heuristic is presented as a
+stochastic process on the graph: two learned pheromone channels, one
+static \emph{off-target} channel, novelty weighting, back-propagating
+deposits, evaporation, and an optional finer store indexed by a
+marking together with a hash of the recent trace (a \emph{T-suffix}).
+The final section relates the suggester's score to the colony.  The
+definitions are complemented by pseudo-code for graph generation, ant
+movement, pheromone updates and event selection.  Every definition is
+taken from the implementation, not invented for the paper; the default
+parameters quoted here are the ones in the source at version
+\texttt{v0.0.7}.
+
+The tool is intended merely as a proof of concept but it also has some
+characteristics that show how model-based testing can be integrated into
+the software process of a real-world organization.
+
+The tool and its documentation were created with the help of
+artificial intelligence. Curiously enough, the original idea,
+prompting, nudging, hand-waving, and overall project oversight
+(including but not limited to this very sentence) were the
+responsibility of the author, a human, and so will be any errors to be
+found herein.
+
 \end{abstract}
 
 \tableofcontents
@@ -87,17 +107,20 @@ default parameters quoted here are the ones in the source at version
 \subsection{Scope}
 
 \texttt{eggembt} tests a system under test (SUT) against a Petri-net
-specification.  Petri nets are a classical model of concurrency and
-distributed state \cite{murata1989petri}, and deriving tests from a model is
-the subject of model-based testing \cite{utting2007practical,utting2012taxonomy}.
-The net supplies an oracle: a step of the SUT that the net
-cannot explain is a candidate bug, and a part of the net that no run has
-visited is untested.  The tool explores the reachability graph (RG) of the
-net---the graph of every marking the net can reach, also called its state
-space---while it drives the SUT, records coverage, and suggests the next
-input.  The suggestion is the place where the ant colony enters: virtual ants walk the
-\emph{model}, never the SUT, and leave pheromone that makes productive routes
-more likely in later walks.  The heuristic is an ant-colony optimisation
+specification.  Petri nets are a classical model of concurrent and
+distributed systems \cite{murata1989petri}, and deriving tests from a
+model is the subject of model-based testing
+\cite{utting2007practical,utting2012taxonomy}.  The net supplies an
+oracle: a step of the SUT that the net cannot explain is either a bug
+candidate or a specification error, and the part of the net that no
+run has visited is untested.  The tool explores the reachability graph
+(RG) of the net---the graph of every marking the net can reach, also
+called its state space---while it drives the SUT, records coverage,
+and suggests the next input.  The suggestion (which can be considered
+as the selection of the next test step) is the place where the ant
+colony enters: virtual ants walk the \emph{model}, never the SUT, and
+leave traces of pheromone making productive or promising routes more
+likely in later walks.  The heuristic is an ant-colony optimisation
 \cite{dorigo1996ants,dorigo2004aco} over the reachability graph.
 
 This document formalises exactly that pipeline.  It is deliberately close to
@@ -108,8 +131,9 @@ is stated as part of the definition.  Sections~\ref{sec:nets} and
 \ref{sec:rg} define the net and the graph, Sections~\ref{sec:targets}
 and~\ref{sec:offtarget} define targets and the off-target region,
 Section~\ref{sec:aco} defines the colony, Section~\ref{sec:suggester} defines
-the suggester's score, and
-Section~\ref{sec:implementation} maps symbols to the implementation.
+the suggester's score, Section~\ref{sec:algorithms} restates the procedures as
+pseudo-code, and Section~\ref{sec:implementation} maps symbols to the
+implementation.
 The companion design record, \texttt{journal.md}, contains the engineering
 history and the reasons behind the choices.
 
@@ -812,7 +836,8 @@ through another route.
 
 \subsection{One iteration}\label{sec:iteration}
 
-\begin{algorithm}[htbp]
+\begin{algorithm}[H]
+\footnotesize
 \caption{One colony iteration (defaults in brackets)}
 \label{alg:iteration}
 \begin{algorithmic}[1]
@@ -947,6 +972,358 @@ hard veto can still refuse a candidate whose every effect is forbidden; the
 phase policy \texttt{veto} is the default.
 \end{remark}
 
+\section{Abstract algorithms}\label{sec:algorithms}
+% DeepSeek V4.1 Flash: abstract algorithms requested by Egge (journal §38).
+
+The definitions above are declarative.  This section restates them as the four
+procedures a reader needs in order to reproduce a campaign: the lazy
+construction of the reachability graph, the walk of one ant, the two pheromone
+updates, and the selection of the next event for the live SUT.  The
+pseudo-code stays close to the implementation but abstracts from storage: a
+marking is an interned node, and $\mathrm{id}(M)$ denotes the node that
+carries $M$.  Algorithm~\ref{alg:iteration} gave the outer colony iteration;
+the procedures below give its inner steps.
+
+\subsection{Reachability-graph generation}\label{sec:alg-rg}
+
+Algorithm~\ref{alg:rg} builds the explored subgraph of
+Definition~\ref{def:explored} on demand.  A node is created when a firing
+first reaches its marking; an existing marking is reused, so two paths that
+meet share one node.  The outer loop takes unexpanded nodes in creation order,
+which is breadth first because identifiers are handed out in discovery order.
+
+\begin{algorithm}[H]
+\footnotesize
+\caption{Lazy generation of the explored reachability graph}
+\label{alg:rg}
+\begin{algorithmic}[1]
+\Require net $N=(P,T,F,I,w,\beta,\ell,\kappa)$, initial markings
+         $\mathcal{M}_0$, limit $B$
+\Ensure explored subgraph
+        $(S_{\mathrm{known}},S_{\mathrm{exp}},E_{\mathrm{exp}})$ and frontier
+        $U=S_{\mathrm{known}}\setminus S_{\mathrm{exp}}$
+\State $S_{\mathrm{known}}\gets\emptyset$;
+       $S_{\mathrm{exp}}\gets\emptyset$;
+       $E_{\mathrm{exp}}\gets\emptyset$;
+       $S_0\gets\emptyset$
+\ForAll{$M\in\mathcal{M}_0$}
+  \State insert $M$ into $S_{\mathrm{known}}$ and $S_0$ unconditionally
+\EndFor
+\While{$\exists s\in S_{\mathrm{known}}\setminus S_{\mathrm{exp}}$}
+  \State take the unexpanded $s$ with the smallest identifier
+  \State \Call{Expand}{$s$}
+\EndWhile
+\State \Return $(S_{\mathrm{known}},S_{\mathrm{exp}},E_{\mathrm{exp}})$
+\Statex
+\Procedure{Expand}{$s$}
+  \State $E_s\gets\emptyset$; $n_{\mathrm{en}}\gets0$;
+         $\mathit{cut}\gets\mathsf{false}$
+  \ForAll{$t\in T$}
+    \If{$\neg\Enabled(t,s)$} \textbf{continue} \EndIf
+    \State $n_{\mathrm{en}}\gets n_{\mathrm{en}}+1$
+    \If{$\mathsf{lifecycle}(t)\ne\bot\wedge\post_t=\emptyset$}
+      \State \textbf{continue} \Comment{engine-landed, no token-game edge}
+    \EndIf
+    \State $(\mathit{status},M')\gets\Call{Fire}{s,t}$
+    \If{$\mathit{status}\ne\mathsf{Ok}$}
+      \State record the bound violation; \textbf{continue}
+    \EndIf
+    \If{$\mathrm{id}(M')=\bot\wedge|S_{\mathrm{known}}|\ge B$}
+      \State $\mathit{cut}\gets\mathsf{true}$; \textbf{continue}
+    \EndIf
+    \If{$\mathrm{id}(M')=\bot$}
+      \State create and classify the node $M'$ in $S_{\mathrm{known}}$
+    \EndIf
+    \State append $e=(s,t,M')$ to $E_s$
+  \EndFor
+  \State add $s$ to $S_{\mathrm{exp}}$ with enabled count $n_{\mathrm{en}}$
+         and flag $\mathit{cut}$
+  \State $E_{\mathrm{exp}}\gets E_{\mathrm{exp}}\cup E_s$
+\EndProcedure
+\end{algorithmic}
+\end{algorithm}
+
+Initial markings are inserted even when the limit has already been reached;
+the cap governs only nodes created by firing.  A firing that would exceed a
+place bound, or overflow an unbounded place, is recorded as a bound violation
+and produces no edge.  A lifecycle input with no output arcs counts towards
+$n_{\mathrm{en}}$---the marking is not a dead end, because the engine can
+restart the SUT---but creates no token-game edge.  When the cap prevents a
+successor from being created, the source is flagged incomplete and the graph
+is marked truncated, so analyses cannot mistake the frontier for a deadlock.
+
+\subsection{Ant movement}\label{sec:alg-ant}
+
+Algorithm~\ref{alg:ant} follows one ant from a start marking.  The walk stops
+when the budget or the step limit is exhausted, no edge is enabled, or the
+arrival rule ends the ant.  \textproc{Choose} is the two-step draw of
+Section~\ref{sec:choice}; Algorithm~\ref{alg:arrive} is the arrival rule of
+Section~\ref{sec:deposits}.  The pair channels are zero when the T-suffix
+layer is off.  In \textproc{Choose}, $U$ is a fresh uniform draw on $[0,1)$.
+
+\begin{algorithm}[H]
+\footnotesize
+\caption{One ant: walk and choice}
+\label{alg:ant}
+\begin{algorithmic}[1]
+\Procedure{Walk}{$s_0$}
+  \State $s\gets s_0$; $\TS\gets(\kappa_0,\dots,\kappa_0)$
+  \For{$k\gets1$ \textbf{to} $40$}
+    \If{$s\notin S_{\mathrm{exp}}$}
+      \If{$B_{\mathrm{exp}}=0$}
+        \State \Return exhausted
+      \EndIf
+      \State \Call{Expand}{$s$}; $B_{\mathrm{exp}}\gets B_{\mathrm{exp}}-1$
+    \EndIf
+    \State $e\gets\Call{Choose}{s,\TS}$
+    \If{$e=\bot$}
+      \State \Return exhausted
+    \EndIf
+    \State $s\gets\tau(e)$; $\TS\gets\TS\cdot h(t_e)$
+    \If{\Call{Arrive}{$s$}}
+      \State \Return ended
+    \EndIf
+  \EndFor
+  \State \Return exhausted
+\EndProcedure
+\Statex
+\Function{Choose}{$s,\TS$}
+  \State $I\gets\{e:\sigma(e)=s,\ \kappa(t_e)=\mathsf{C}\}$
+  \State $O\gets\{e:\sigma(e)=s,\ \kappa(t_e)\ne\mathsf{C}\}$
+  \If{$I=O=\emptyset$}
+    \State \Return $\bot$
+  \EndIf
+  \If{$I=\emptyset$}
+    \State $P\gets O$
+  \ElsIf{$O=\emptyset$}
+    \State $P\gets I$
+  \ElsIf{$U<\rho_{\mathrm{env}}$}
+    \State $P\gets O$
+  \Else
+    \State $P\gets I$
+  \EndIf
+  \ForAll{$e\in P$}
+    \If{$e\in O$}
+      \State $\wgt(e)\gets\omega(e)$
+    \Else
+      \State $\TS'\gets\TS\cdot h(t_e)$
+      \State $a^+\gets\Pair_a(\tau(e),\TS')$;
+             $r^+\gets\Pair_r(\tau(e),\TS')$
+      \State $\wgt(e)\gets
+             (a(e)+a^++0.1)^{\alpha}\nu(e)^{\beta}
+             \exp[-\lambda(r(e)+g(e)+r^+)]$
+    \EndIf
+  \EndFor
+  \State draw $e\in P$ with probability
+         $\wgt(e)/\sum_{e'\in P}\wgt(e')$; if the sum is zero, uniformly
+  \State \Return $e$
+\EndFunction
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}[H]
+\footnotesize
+\caption{Arrival rule of one ant}
+\label{alg:arrive}
+\begin{algorithmic}[1]
+\Function{Arrive}{$s$}
+  \If{$\cls(s)=\mathsf{Forbidden}$}
+    \State \Call{Deposit}{$r,s,c_{\mathrm{cat}}$};
+           \Return $\mathsf{true}$
+  \ElsIf{$\cls(s)=\mathsf{Seeking}$}
+    \State \Call{Deposit}{$a,s,c_{\mathrm{tgt}}$};
+           \Return $\mathsf{true}$
+  \EndIf
+  \If{$s\notin S_{\mathrm{exp}}$}
+    \If{$B_{\mathrm{exp}}>0$}
+      \State \Call{Expand}{$s$}; $B_{\mathrm{exp}}\gets B_{\mathrm{exp}}-1$
+    \Else
+      \State \Call{Deposit}{$a,s,c_{\mathrm{unexp}}$};
+             \Return $\mathsf{true}$
+    \EndIf
+  \EndIf
+  \ForAll{$e\in E_{\mathrm{exp}}$ with $\sigma(e)=s$}
+    \If{$\cls(\tau(e))\ne\mathsf{Forbidden}\wedge d(e)=0$}
+      \State \Call{Deposit}{$a,s,c_{\mathrm{unexp}}$};
+             \Return $\mathsf{true}$
+    \EndIf
+  \EndFor
+  \State \Return $\mathsf{false}$
+\EndFunction
+\end{algorithmic}
+\end{algorithm}
+
+The default amounts are $c_{\mathrm{unexp}}=1$, $c_{\mathrm{tgt}}=2$ and
+$c_{\mathrm{cat}}=3$.  The expansion budget is shared by all ants of an
+iteration.  A forbidden arrival deposits into the repel channel and ends the
+ant; a seeking target deposits into the attract channel and ends it.  An
+unexpanded marking is expanded while budget remains; with no budget left it
+is deposited as unexplored.  A marking with an uncovered outgoing edge is
+also a reason to stop.  The static off-target region does not kill the ant:
+behaviour inside it may still be worth covering.
+
+\subsection{Pheromone setting}\label{sec:alg-pheromone}
+
+Two operations write the learned channels; the static off-target channel is
+not learned.  \textproc{Deposit} walks the predecessor index backwards from the
+arrival marking for $D$ levels (default $D=5$) and adds $A\gamma^d$ to every
+reverse edge at depth $d=0,\dots,D-1$, capped at $\Tau$.  A pair deposit is
+flat.  \textproc{Evaporate} applies one evaporation step and wipes the attraction
+of saturated edges; with the matured-target exception, the way into a
+$\cls(\mathsf{Forbidden})$ marking is spared.
+
+\begin{algorithm}[H]
+\footnotesize
+\caption{Pheromone deposition, back-propagation and evaporation}
+\label{alg:pheromone}
+\begin{algorithmic}[1]
+\Procedure{Deposit}{$c,s,A$}
+  \State $Q\gets\{e\in E_{\mathrm{exp}}:\tau(e)=s\}$
+  \For{$d\gets0$ \textbf{to} $D-1$}
+    \ForAll{$e\in Q$}
+      \State $c(e)\gets\min(\Tau,c(e)+A\gamma^{d})$
+    \EndFor
+    \State $Q\gets$ edges entering a source not visited at a
+           smaller depth
+  \EndFor
+\EndProcedure
+\Statex
+\Procedure{PairDeposit}{$c,s,\TS,A$}
+  \State $\Pair_c(s,\TS)\gets\min(\Tau,\Pair_c(s,\TS)+A)$
+\EndProcedure
+\Statex
+\Procedure{Evaporate}{$\mathit{spare}$}
+  \ForAll{$e\in E_{\mathrm{exp}}$}
+    \If{$\mathrm{saturated}(e)$}
+      \State $a(e)\gets0$
+    \EndIf
+    \If{$\neg\mathit{spare}(\tau(e))$}
+      \State $a(e)\gets(1-\epsilon_a)a(e)$;
+             $r(e)\gets(1-\epsilon_r)r(e)$
+    \EndIf
+  \EndFor
+  \ForAll{$(s,\TS)$ in the pair store}
+    \If{$\neg\mathit{spare}(s)$}
+      \State age both pair channels by the same factors
+    \EndIf
+    \State delete the key if both channels are below $10^{-4}$
+  \EndFor
+\EndProcedure
+\Statex
+\Procedure{RefreshRegion}{}
+  \State $S_{\mathrm{reach}}\gets$ markings that can reach a seed of
+         Definition~\ref{def:offtarget}
+  \State $g(e)\gets\rho$ if
+         $\tau(e)\in S_{\mathrm{exp}}\setminus S_{\mathrm{reach}}$, else $0$
+\EndProcedure
+\end{algorithmic}
+\end{algorithm}
+
+The direct way into an event carries the full amount; a predecessor five
+steps behind carries $\gamma^5\approx0.168$ of it.  The default rates are
+$\epsilon_a=0.10$ and $\epsilon_r=0.02$, so a catastrophe is remembered longer
+than a success.  Real-run milestones and catastrophes use the same
+\textproc{Deposit}, with the amounts listed in Section~\ref{sec:deposits}, and
+also write the pair store.  The off-target value
+$\rho$ is set by \textproc{RefreshRegion} whenever the graph grew; it is never
+accumulated and never evaporated.
+
+\subsection{Event selection in the tracker}\label{sec:alg-event}
+
+The belief tracker does not choose the next event by itself.  It maintains
+$B$, closes it under silent steps, and lists the controllable transitions
+enabled in at least one marking of $B$; the suggester turns that list into an
+event.  Algorithm~\ref{alg:event} is the selection rule, with the colony
+optional.  The lifecycle gate is checked first: while the SUT is paused or
+down, only the lifecycle input that brings it back is returned.  The optional
+rare hunt is a second early branch: if an unseen rare non-controllable
+transition is enabled in some belief marking, the suggester returns a dwell
+(or a wait when its wait-for is zero) instead of an input; a controllable
+rare input is handled by the ordinary score and sent after its dwell.
+
+\begin{algorithm}[H]
+\footnotesize
+\caption{Selecting the next event from the tracker's belief}
+\label{alg:event}
+\begin{algorithmic}[1]
+\Require belief $B$; candidates $\mathcal{C}$ from the tracker; board
+         $\cls$; colony $A$ or $\bot$; live trace $\TS$
+\Ensure a suggestion, or $\mathsf{Wait}$, $\mathsf{Done}$ or
+        $\mathsf{Stuck}$
+\If{the lifecycle gate is not $\mathsf{Running}$}
+  \State \Return the lifecycle input the gate allows, or $\mathsf{Stuck}$
+\EndIf
+\If{the rare hunt is on and an unseen rare non-controllable transition
+    with attempts left is enabled in some policy-allowed $s\in B$}
+  \State \Return $\mathsf{Dwell}$ (or $\mathsf{Wait}$ when the wait is zero)
+\EndIf
+\ForAll{$t\in\mathcal{C}$}
+  \State $E_{\mathrm{C}}(t)\gets
+         \{(s,e):s\in B,\ e=\text{the edge of }t\text{ at }s\}$
+\EndFor
+\State expand up to $B_{\mathrm{exp}}$ unexpanded successors, starting from the
+       candidate targets
+\State refresh the board and the predecessor index
+\State seed the goal costs and tiers, then relax backwards
+       \Comment{Section~\ref{sec:suggester}}
+\ForAll{$t$ with $E_{\mathrm{C}}(t)\ne\emptyset$}
+  \State compute $\mathrm{rob}(t)$ and $\mathrm{haz}(t)$
+         \Comment{Section~\ref{sec:suggester}}
+  \If{the policy is $\mathsf{Veto}$ and every target is forbidden}
+    \State veto $t$; \textbf{continue}
+  \EndIf
+  \State $\mathit{best}(t)\gets$ best score over $E_{\mathrm{C}}(t)$
+         \Comment{tier penalty included, Section~\ref{sec:suggester}}
+  \State $\mathrm{goal}(t)\gets$ tier of that best score
+  \State $\mathrm{eff}(t)\gets\mathit{best}(t)
+         +\rho_{\mathrm{risk}}(1-\mathrm{rob}(t))
+         +h_{\mathrm{haz}}\mathrm{haz}(t)$
+  \If{$A\ne\bot$ and $\Tau>0$}
+    \State $\mathrm{eff}(t)\gets\mathrm{eff}(t)
+           +w_{\mathrm{rep}}\frac{R(t)+G(t)+R^+(t)}
+             {|E_{\mathrm{C}}(t)|\Tau}
+           -w_{\mathrm{att}}\frac{A(t)+A^+(t)}
+             {|E_{\mathrm{C}}(t)|\Tau}$
+  \EndIf
+\EndFor
+\If{no candidate has a finite score}
+  \State \Return $\mathsf{Wait}$, $\mathsf{Done}$ or $\mathsf{Stuck}$
+         \Comment{by the goal and expected-event test}
+\EndIf
+\If{the rare hunt is on and some $t$ has
+    $\mathrm{goal}(t)=\mathsf{Rare}$}
+  \State keep only the candidates with $\mathrm{goal}(t)=\mathsf{Rare}$
+\EndIf
+\State choose the least $\mathrm{eff}$; break ties by robustness, goal tier,
+       transition order
+\If{the chosen candidate is rare with a positive wait-for}
+  \State \Return $\mathsf{Dwell}$ for the chosen input
+\EndIf
+\State \Return the chosen input
+\end{algorithmic}
+\end{algorithm}
+
+A frontier marking is seeded at $\tierpen(\mathsf{Frontier})$, a seeking
+marking at $\tierpen(\mathsf{Target})$, and every source of an uncovered edge
+at $1+\tierpen(\operatorname{tier}(e))$.  The backward Dijkstra over the
+predecessor index then fills $\dist$ for the remaining markings.
+
+\paragraph{With and without pheromones.}
+When the campaign runs with the colony (the default), the session performs
+\texttt{antIterationsPerSuggestion} iterations (default one) on the current
+belief before Algorithm~\ref{alg:event}, and the attached colony contributes
+$A(t),R(t),G(t)$ and, with the T-suffix layer on, $A^+(t),R^+(t)$.  With
+\texttt{--no-ants}, no ants walk and no colony is attached: the conditional
+line in Algorithm~\ref{alg:event} is omitted and the ranking is the baseline
+\[
+  \mathrm{eff}_{\mathrm{base}}(t)=\mathit{best}(t)
+  +\rho_{\mathrm{risk}}\bigl(1-\mathrm{rob}(t)\bigr)
+  +h_{\mathrm{haz}}\,\mathrm{haz}(t).
+\]
+Everything else---belief, candidates, goal distance, robustness, hazard and
+the tie-break---is identical.  The colony therefore changes which input is
+chosen, not what counts as a legal or a useful one.
+
 \section{Parameters and correspondence to the implementation}\label{sec:implementation}
 
 \subsection{Default parameters}
@@ -1019,7 +1396,7 @@ post-mortem machinery, the crash-credibility experiment, the temporal-logic
 open item and the command hooks are described in \texttt{journal.md} and
 \texttt{docs/PLUGIN\_PROTOCOL.md}.  The publication is intentionally
 implementation-faithful: the defaults and the edge cases quoted here are the
-ones in the source at \texttt{v0.0.6}.  If a definition here and the code ever
+ones in the source at \texttt{v0.0.7}.  If a definition here and the code ever
 disagree, the code is the ground truth and this document should be corrected.
 
 \section{Conclusion}

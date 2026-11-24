@@ -43,7 +43,7 @@ hasnt() { ! grep -q -- "$1" "$TMP/out" || fail "output unexpectedly has \"$1\"";
 
 begin version
 # DeepSeek V4.1 Flash: the version follows the git branch (doku section 20).
-run 0 "$EGGEMBT" version && has "^eggembt v0[.]0[.]6$"
+run 0 "$EGGEMBT" version && has "^eggembt v0[.]0[.]7$"
 
 # GLM-5.3-Flash: the credits, byte for byte as Egge asked for them.
 begin credits

@@ -976,3 +976,45 @@ build command.
 
 The suite is unchanged: **19 CTest entries**, 18 unit suites (300 tests) and
 42 CLI scenarios, all green. `eggembt version` prints `v0.0.6`.
+
+### DeepSeek V4.1 Flash — v0.0.7: the paper gets algorithms, and a name
+
+The publication is now `publication/kettunen2026.tex`, built as
+`publication/kettunen2026.pdf`; `publication/main.tex` no longer exists. The
+rename gives the source the paper's own name and removes the ambiguous `main`
+from a repository whose branch is the version. `publication/README.md` and
+`.gitignore` use the new paths, and the article's metadata names `v0.0.7`.
+
+§6, "Abstract algorithms", restates the declarative definitions as five
+procedures:
+
+- Algorithm 2 generates the explored reachability graph lazily: initial
+  markings are inserted unconditionally; a firing that exceeds a place bound
+  or overflows an unbounded place is recorded without an edge; an
+  engine-landed lifecycle input counts as enabled but creates no token-game
+  edge; a full state cap flags the source incomplete and the graph truncated.
+- Algorithms 3 and 4 walk one ant and apply its arrival rule. The ant expands
+  unexpanded markings while its shared budget lasts, chooses between the
+  controllable and environment pools with `p_env`, weighs input edges by
+  `(a + a⁺ + 0.1)^α ν^β exp(−λ(r + g + r⁺))`, and stops on a forbidden
+  arrival, a seeking target, an unexplored marking, or an uncovered outgoing
+  edge.
+- Algorithm 5 deposits, back-propagates and evaporates pheromone, including
+  the flat pair deposit, the saturated-edge rule and the matured-target
+  exception.
+- Algorithm 6 selects the next event from the tracker's belief: lifecycle
+  gate, rare hunt, backward goal costs, veto policy, effective score,
+  rare-only pool and tie-break. Its "with and without pheromones" paragraph
+  gives the `--no-ants` baseline
+  `eff_base = best + ρ_risk(1 − rob) + h_haz · haz`, so the colony's only
+  contribution is visible.
+
+The article is 20 pages with no overfull boxes; the two underfull warnings are
+the symbol-table cells that were already there. The build is `pdflatex
+kettunen2026.tex`, `bibtex kettunen2026`, then `pdflatex` twice.
+
+The product version is now `v0.0.7` to match the branch: `src/Version.h`,
+`cli_test.sh`, `INSTALL.md` and the publication metadata all agree, and
+`eggembt version` prints `v0.0.7`. The suite is unchanged: 19 CTest entries,
+18 unit suites (300 tests) and 42 CLI scenarios, all green. `journal.md` §38
+records the step; §37's `main.tex` and `v0.0.6` references remain historical.
