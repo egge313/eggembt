@@ -111,7 +111,14 @@ class RefSutPlugin : public ISutPlugin {
 public:
     PluginCapabilities capabilities() const override
     {
-        return {false, false, 10};  // no snapshots, no crashes in this example
+        // DeepSeek V4.1 Flash: no snapshots, no crashes in this example, and
+        // exactly one initial state. Advertising the name lets the Session
+        // skip other markings instead of failing on the first run (doku
+        // section 41).
+        PluginCapabilities caps;
+        caps.restartMs = 10;
+        caps.initialMarkings = {"start"};
+        return caps;
     }
 
     bool startRun(const std::string &initialMarking, const PluginRunOptions &options,

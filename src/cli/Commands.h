@@ -30,4 +30,8 @@ int cmdCompare(const std::vector<std::string> &args, std::ostream &out, std::ost
 // with the eggembt-only annotations kept as comments and one toolspecific block.
 int cmdExport(const std::vector<std::string> &args, std::ostream &out, std::ostream &err);
 
+// DeepSeek V4.1 Flash: convert a model (PNML or JSON) to the eggembt JSON
+// format, so a PNML net can be annotated for testing (doku section 40).
+int cmdImport(const std::vector<std::string> &args, std::ostream &out, std::ostream &err);
+
 }  // namespace cli

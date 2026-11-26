@@ -288,7 +288,9 @@ public:
     const SessionConfig &config() const { return cfg_; }
 
 private:
-    std::size_t pickInitialMarking();
+    // DeepSeek V4.1 Flash: choose among the model's initial markings, taking
+    // the plug-in's advertised capability into account (doku section 41).
+    std::optional<std::size_t> pickInitialMarking(const PluginCapabilities &caps, std::string *error);
 
     // GLM-5.3-Flash: after a successful replay, rebuild from the recording the
     // pheromones the live run would have left behind (see Session::restore).

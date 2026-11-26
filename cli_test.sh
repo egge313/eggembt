@@ -43,7 +43,7 @@ hasnt() { ! grep -q -- "$1" "$TMP/out" || fail "output unexpectedly has \"$1\"";
 
 begin version
 # DeepSeek V4.1 Flash: the version follows the git branch (doku section 20).
-run 0 "$EGGEMBT" version && has "^eggembt v0[.]0[.]7$"
+run 0 "$EGGEMBT" version && has "^eggembt v0[.]0[.]8$"
 
 # GLM-5.3-Flash: the credits, byte for byte as Egge asked for them.
 begin credits
@@ -59,6 +59,7 @@ begin help
 run 0 "$EGGEMBT" help && has "Commands:" && has "agent-sim" && has "export"
 run 0 "$EGGEMBT" help run && has "eggembt run MODEL" && has "--simulate" && has "--budget"
 run 0 "$EGGEMBT" help export && has "standard PNML"
+run 0 "$EGGEMBT" help import && has "eggembt JSON"  # DeepSeek V4.1 Flash
 run 0 "$EGGEMBT" run --help && has "--livelock-timeout"
 
 begin usage-errors
@@ -105,6 +106,21 @@ run 0 "$EGGEMBT" export "$DRINKS" --strict --output "$TMP/strict.pnml" && has "P
 run 2 "$EGGEMBT" export && has "expected exactly one model file"
 run 2 "$EGGEMBT" export "$TMP/does-not-exist.json" && has "cannot open"
 run 2 "$EGGEMBT" export "$DRINKS" --output && has "needs a value"
+
+begin import
+# DeepSeek V4.1 Flash: PNML (or JSON) -> the eggembt JSON model (doku section
+# 40). The result is complete enough to run 'check' and ready to annotate;
+# without --output the document is the only thing on standard output.
+run 0 "$EGGEMBT" import "$PNML" --output "$TMP/imported.json" && has "JSON model written to"
+grep -q '"markings"' "$TMP/imported.json" || fail "the imported model lacks markings"
+grep -q '"kind": "observable"' "$TMP/imported.json" || fail "the imported model lacks a kind"
+run 0 "$EGGEMBT" check "$TMP/imported.json" --no-explore \
+    && has "coffee-pnml" && has "5 transitions" && has "target markings:  none"
+run 0 "$EGGEMBT" import "$DRINKS" && has '"version": 1' && has '"target"'
+run 0 "$EGGEMBT" import "$DRINKS" --strict --output "$TMP/strict.json" && has "JSON model written"
+run 2 "$EGGEMBT" import && has "expected exactly one model file"
+run 2 "$EGGEMBT" import "$TMP/does-not-exist.json" && has "cannot open"
+run 2 "$EGGEMBT" import "$DRINKS" --output && has "needs a value"
 
 begin check-reports-every-model-error
 cat >"$TMP/broken.json" <<'EOF'

@@ -57,7 +57,7 @@
 \author{Esa Kettunen \\
   Egge Collective \\
   The \texttt{eggembt} project}
-\date{Draft of 24 November 2026 --- product version \texttt{v0.0.7}}
+\date{Draft of 25 November 2026 --- product version \texttt{v0.0.8}}
 
 \begin{document}
 
@@ -85,7 +85,7 @@ definitions are complemented by pseudo-code for graph generation, ant
 movement, pheromone updates and event selection.  Every definition is
 taken from the implementation, not invented for the paper; the default
 parameters quoted here are the ones in the source at version
-\texttt{v0.0.7}.
+\texttt{v0.0.8}.
 
 The tool is intended merely as a proof of concept but it also has some
 characteristics that show how model-based testing can be integrated into
@@ -100,6 +100,10 @@ found herein.
 
 \end{abstract}
 
+\medskip
+\noindent\textbf{Keywords:} Petri nets; model-based testing; reachability
+graph; state space; coverage; ant colony optimization; test generation.
+
 \tableofcontents
 
 \section{Introduction}
@@ -107,7 +111,8 @@ found herein.
 \subsection{Scope}
 
 \texttt{eggembt} tests a system under test (SUT) against a Petri-net
-specification.  Petri nets are a classical model of concurrent and
+specification.  Petri nets, introduced by Petri
+\cite{petri1962kommunikation}, are a classical model of concurrent and
 distributed systems \cite{murata1989petri}, and deriving tests from a
 model is the subject of model-based testing
 \cite{utting2007practical,utting2012taxonomy}.  The net supplies an
@@ -132,7 +137,8 @@ is stated as part of the definition.  Sections~\ref{sec:nets} and
 and~\ref{sec:offtarget} define targets and the off-target region,
 Section~\ref{sec:aco} defines the colony, Section~\ref{sec:suggester} defines
 the suggester's score, Section~\ref{sec:algorithms} restates the procedures as
-pseudo-code, and Section~\ref{sec:implementation} maps symbols to the
+pseudo-code, Section~\ref{sec:application} revisits the campaigns recorded in
+the journal, and Section~\ref{sec:implementation} maps symbols to the
 implementation.
 The companion design record, \texttt{journal.md}, contains the engineering
 history and the reasons behind the choices.
@@ -156,8 +162,8 @@ a synonym for the reachability graph, and for implementation names such as
 
 Our nets are Place/Transition nets with weighted ordinary arcs, weighted
 inhibitor arcs, place bounds and typed transitions, in the classical sense of
-\cite{murata1989petri}; the annotations of Section~\ref{sec:annotations} are
-specific to the testing tool.
+\cite{petri1962kommunikation,murata1989petri}; the annotations of
+Section~\ref{sec:annotations} are specific to the testing tool.
 
 \subsection{The net}
 
@@ -400,9 +406,11 @@ the state space of the net.  An edge is written $e=(M,t,M')$ with source
 $\sigma(e)=M$, target $\tau(e)=M'$ and label $\ell(t)$.
 \end{definition}
 
-The graph is generally infinite even for a finite net.  The tool therefore
-never constructs $G$ in full.  It constructs a finite \emph{explored
-subgraph} and treats the unexplored part explicitly.
+The graph is generally infinite even for a finite net, and even a finite
+graph can be far too large to enumerate; this is the state explosion problem
+\cite{valmari1998state}.  The tool therefore never constructs $G$ in full.
+It constructs a finite \emph{explored subgraph} and treats the unexplored
+part explicitly.
 
 \begin{definition}[Explored subgraph]\label{def:explored}
 An explored subgraph is a triple $(S_{\mathrm{known}},S_{\mathrm{exp}},E_{\mathrm{exp}})$
@@ -1324,6 +1332,229 @@ Everything else---belief, candidates, goal distance, robustness, hazard and
 the tie-break---is identical.  The colony therefore changes which input is
 chosen, not what counts as a legal or a useful one.
 
+\section{Application: what the campaigns found}\label{sec:application}
+
+The definitions above were not written after the fact.  They describe a tool
+that has been run on a ladder of models, from a four-place drink machine to a
+ten-thousand-state product of four communicating machines, and the engineering
+record in \texttt{journal.md} contains the measurements.  This section revisits
+that record.  It is an application chapter, not a controlled evaluation: the
+models were built to exercise one mechanism at a time, the campaigns are
+deterministic only for a given seed, and the wall-clock numbers belong to the
+development machine.  The purpose is to show which parts of the machinery were
+actually exercised and what the numbers do and do not say.
+
+\subsection{A ladder of models}
+
+The examples shipped with the tool form a deliberate ladder.
+
+\begin{itemize}[leftmargin=2.2em]
+  \item \texttt{examples/drink-machine.json} is the smallest complete model:
+        a coin, a drink, a return, and one target marking.  It is the model
+        used in the first end-to-end campaign and in the reference agent.
+        The same net is shipped as \texttt{examples/coffee-pnml.pnml}, so the
+        PNML reader can be checked against a JSON model whose behaviour is
+        known.
+  \item \texttt{examples/elevator-door.json} adds place bounds, inhibitor
+        arcs and a \texttt{covers}-matched error marking (\texttt{jammed})
+        whose post-mortem is a snapshot.  It is the smallest model on which
+        the belief tracker must distinguish a forbidden marking from an
+        ordinary dead end.
+  \item \texttt{examples/atm.json} is the worked example that exercises the
+        whole toolbox: 22 places, 22 transitions, three initial markings,
+        two target markings, an error marking, four error transitions, a
+        traced internal announcement, an unpredictable human step and a
+        \texttt{covers} target that requires a real withdrawal.  It is
+        discussed below.
+  \item the four-machine ring in \texttt{tests/tst\_comm10k.cpp} is the scale
+        model: four machines sharing four binary channels, exactly
+        $5^4\cdot2^4=10{,}000$ markings and $64{,}000$ edges, with one goal
+        and one error marking per machine.  It is used for the run-length
+        experiment, not for a functional story.
+\end{itemize}
+
+The ladder matters because each model pins a different claim.  A small model
+can make a campaign look better than it is; a large model can hide a
+mechanism in noise.  The journal records both, and the publication quotes the
+small ones only for structure.
+
+\subsection{The ATM campaign}\label{sec:atm}
+
+The ATM model is the closest the project comes to an application.  A visit
+inserts a card, reads it, asks for a PIN, optionally opens a bank session and
+a database connection, checks the card against a stolen report, answers a
+withdrawal request, and ends with cash, a rejection, a confiscated card or a
+component failure.  The model has three initial markings,
+\texttt{atm-lobby}, \texttt{atm-drivein} and \texttt{atm-branch}.  They differ
+in the number of tokens in the cash cassette (2, 1 and 0), because identical
+markings would be interned into one graph node and the round-robin over the
+three ATMs would be invisible in the run log.  With the cassette levels the
+rotation is observable, and the branch machine, which is out of cash, cannot
+reach the good target at all.
+
+The target \texttt{visit-done} is matched with \texttt{covers} and requires
+both \texttt{visit\_done} and \texttt{cash\_taken}; the plain card-return
+exit reaches \texttt{visit-aborted}, which is a target marking but not an
+intentional one, so it does not end the campaign.  The error marking
+\texttt{card-swallowed} is reached after three invalid PINs, is matched with
+\texttt{covers}, has policy \texttt{until\_covered} and one crash dump.  Four
+error transitions---\texttt{confiscate}, \texttt{session\_fail},
+\texttt{db\_fail} and \texttt{atm\_fail}---sit where the belief is a single
+state and their competitors are visible, so a certain step can be attributed
+and dumped.  The PIN input is tagged \texttt{unpredictable}, which keeps the
+catastrophe deposit flat on a way in that measured a human's reaction time.
+
+A campaign with \texttt{--sim-seed 5 --max-runs 45} tells the deterministic
+story recorded in journal \S13: 37 runs, five crash post-mortems (the four
+error transitions, each dumped once, and the swallowed-card marking), the
+error marking hit twice and satisfied, the good target reached at run 37, and
+the three initial markings used 13, 12 and 12 times.  Other simulator seeds
+produce the same story in 37--58 runs.  The point is not the exact count.  The
+point is that one model exercised initial-marking rotation, target and error
+policies, certain error transitions, post-mortem budgets, the
+\texttt{covers} match, the unpredictable tag and the run log's trace view
+without a special-case code path for the ATM.
+
+The model also shows the price of ambiguity.  The two silent routes into the
+reading state are indistinguishable from outside, so \texttt{reader\_check}
+and \texttt{pad\_check} can never be covered \emph{definitely}; they are
+credited only when every consistent path crosses them.  This is not a bug in
+the colony.  It is the belief tracker being honest about what the SUT let it
+observe, and it is the reason the model makes the stolen-card announcement a
+traced internal step: the announcement narrows the belief before the
+observable \texttt{confiscate} step, so that error transition is caught
+certainly.
+
+\subsection{The fork benchmark: what one edge channel cannot learn}
+
+The central negative result is the fork benchmark of journal \S25.  A short
+corridor leads to a fork.  One branch is a single input, \texttt{mine}, that
+crashes the SUT; the other is a two-step safe route to the same region.  The
+region is a ring of 1000 markings with a skip edge, 1008 markings and 2010
+edges in all.  Every run starts in the corridor and meets the same fork with
+the same pheromone memory.  The crash is a predicted target while it is still
+being reproduced, so the target board deliberately keeps the way in
+attractive; after the experiment resolves, the catastrophe channel takes
+over.  The campaign budget is six runs of 200 events.
+
+The measured comparison (three seeds, graph seed 7) is stark:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+guidance & crashes & long runs & covered edges \\
+\midrule
+no ants & 5 & 1 & 201 \\
+ants, edge channel only & 5 & 1 & 201 \\
+ants, edge and T-suffix & 3 & 3 & 585--586 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Without the colony, the campaign explores the region once and then walks into
+the crashing shortcut at the start of each following run.  The edge channel
+alone reproduces that outcome exactly, on every seed.  The reason is
+saturation: the target walks keep passing through the region's entry state on
+their safe way to the target, so the shared per-edge values around the fork
+sit at the cap $\Tau=10$ on both sides.  The later catastrophe deposit lands
+on saturated values and cannot make the shortcut look worse than its
+neighbours.  The pair layer does not share that fate.  Its key is the marking
+together with the recent trace suffix, so the crash's pair is ``entry state,
+suffix ending in \texttt{mine}'', while a safe arrival lands on a different
+pair.  The pair keeps its catastrophe repel while the walks flood the
+neighbourhood.  The result is about 2.9 times the coverage for the same run
+budget, at about 2.6 times the wall-clock time.
+
+The lesson is not ``ants help''.  It is that one value per state cannot carry
+``this way in is fatal'' while the target walks keep saying ``this state is on
+the way''.  The second memory, keyed by how the state was reached, can.  This
+is exactly the role of the T-suffix layer in Section~\ref{sec:tsuffix}, and it
+is why the layer is optional: on models where the safe and the bad route do
+not share their recent history, the edge channel is enough, and the pair store
+only costs memory.
+
+\subsection{Run length and evaporation}
+
+Two further experiments bound the tuning.  The first is the evaporation
+boundary (journal \S27).  With per-suggestion aging, a run of 200 suggestions
+keeps $0.98^{200}\approx1.8\%$ of the repel lesson its beginning laid; the
+repel half-life is about 34 suggestions.  Moving the aging to the run
+boundary---\texttt{--evaporate-between-runs}---keeps the lesson intact inside
+a run but lets a wrong lesson steer the whole run.  On the fork benchmark the
+boundary variant covered 777 edges instead of 586, with two crashes instead of
+three and four long runs instead of three.  The same contrast held at 400
+events.  The default remains per-suggestion aging, because a long run is
+exactly where a stale lesson is most expensive, and because boundary aging
+makes a campaign sensitive to the run length.
+
+The second is the run-length experiment on the 10{,}000-state ring (journal
+\S32).  Four campaigns with a ten-minute budget and \texttt{--max-events} 50,
+200, 800 and 3200 covered 12{,}198, 12{,}527, 13{,}254 and 11{,}798 edges on
+average.  The middle range was best on average, but the best-to-worst
+difference was only 12\%, while the seed-to-seed spread within one size
+reached 41\%.  The reliable part was the per-event rate: edges per event rose
+from 0.918 at 50 events to 0.972 at 3200, because a short run re-tests the
+initial region on every restart.  Run length is therefore a weak coverage
+lever; it is a lever on how much of a bad run has to be repeated and how often
+the SUT setup is paid.
+
+\subsection{Rare transitions and the hunt}
+
+The rare-transition machinery (journal \S30) is the one place where the model
+declares a probability rather than measuring one.  A transition may carry
+\texttt{rare} with a declared $p$, an attempt budget and an optional dwell.
+The number $p$ is descriptive: the engine cannot observe the SUT's real odds,
+so it never schedules from $p$.  The hunt is driven by the attempt budget.
+With \texttt{--hunt-rare}, an unseen rare transition whose budget is not spent
+becomes a goal above targets, fresh transitions, fresh edges and the frontier;
+an equal-cost tie also goes to the rare goal, or a fresh edge on the last step
+would keep the hunt from making the choice it was asked to make.  The enabling
+state, not the edge, is the goal for a move of the SUT, because the tester
+cannot take that edge.  A dwell at the enabling state suspends the idle
+timeout, is ended early by any real event, and charges one attempt; a
+controllable rare input with a non-zero dwell is withheld until the dwell
+ends.  A \texttt{Quiescent} report is not an event and does not end the dwell.
+
+The honest limits are part of the feature.  An unreachable rare transition
+keeps the campaign alive until a hard limit, because no attempt can be spent
+and the hunt is still pending.  Attempt budgets do not survive a run log, so
+a continued campaign starts them fresh while the transition hits survive.
+A rare move that the SUT makes only under conditions the model does not
+describe cannot be hunted by waiting at a state the model believes in.  The
+hunt is not a probability oracle.
+
+\subsection{What the applications do not show}
+
+The ladder is not a representative sample of industrial models.  The coffee
+machine, the elevator door and the ATM are small enough to inspect by hand;
+the ring is regular enough to count its state space exactly.  None of them has
+data variables, real-time constraints, a distributed clock or a network
+partition.  The tool deliberately leaves those to the command hooks and to the
+SUT's own oracle (Section~\ref{sec:implementation}), and the journal's limits
+chapter records where the heuristic stops helping: saturation of a sought
+target, exact-match sparsity of the pair key, truncated graphs, human and
+timing unpredictability, and a model that is simply wrong.
+
+Two issues that the campaigns exposed are worth naming here because they are
+easy to miss in a definition paper.  First, several initial markings are only
+as useful as the plug-in's ability to realise them: the tracker sends the
+marking's name in \texttt{start\_run}, and a wrapper that ignores it can start
+the SUT in the wrong state while the belief is built from the model's marking.
+The ATM's cassette levels make the rotation observable in the log, but they
+cannot make a wrapper honest.  At version \texttt{v0.0.8} a plug-in can
+advertise the names it can realise in its hello, and the tracker filters the
+rotation and refuses an explicit \texttt{--initial} outside the list (journal
+\S41); the capability is a promise, not a proof.  Second, PNML cannot restore
+the testing annotations: it has one initial marking and no targets, errors,
+milestones, bounds or crash predictions.  The tool accepts PNML for
+\texttt{check} and \texttt{run}, and \texttt{eggembt import} now reads it
+through the same validating loader and writes the eggembt JSON model that is
+to be annotated, saying what the conversion cannot carry (journal \S41).
+PNML's expressive poverty is a property of the format, not of the import; the
+JSON model remains the complete specification.  Both issues are recorded in
+\texttt{TODO.md} and in journal \S39.
+
 \section{Parameters and correspondence to the implementation}\label{sec:implementation}
 
 \subsection{Default parameters}
@@ -1396,7 +1627,7 @@ post-mortem machinery, the crash-credibility experiment, the temporal-logic
 open item and the command hooks are described in \texttt{journal.md} and
 \texttt{docs/PLUGIN\_PROTOCOL.md}.  The publication is intentionally
 implementation-faithful: the defaults and the edge cases quoted here are the
-ones in the source at \texttt{v0.0.7}.  If a definition here and the code ever
+ones in the source at \texttt{v0.0.8}.  If a definition here and the code ever
 disagree, the code is the ground truth and this document should be corrected.
 
 \section{Conclusion}

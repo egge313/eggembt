@@ -93,7 +93,7 @@ user-local install, add this to `~/.profile` or `~/.bashrc`:
 
 Then check the version:
 
-    eggembt version            # eggembt v0.0.7
+    eggembt version            # eggembt v0.0.8
 
 The version follows the git branch and lives in `src/Version.h` only; there is
 no configure-time version to pass. Nothing else is installed — no libraries,

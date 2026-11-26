@@ -60,6 +60,9 @@ struct ProtocolMessage {
     bool crash = false;
     std::int64_t restartMs = 0;
     bool syncCapable = false;  // DeepSeek V4.1 Flash: the agent can hold the SUT at an event
+    // DeepSeek V4.1 Flash: the initial marking names the agent can realise
+    // (doku section 41). Empty: not advertised, so every marking is tried.
+    std::vector<std::string> initials;
 
     // start_run (and echoed in every event of that run, so that late events of
     // a previous run can be told apart and dropped)

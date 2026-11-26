@@ -69,6 +69,7 @@ void RemotePlugin::onLine(const std::shared_ptr<Shared> &shared, const std::stri
         shared->caps.crash = m.crash;
         shared->caps.restartMs = m.restartMs;
         shared->caps.eventAcks = m.syncCapable;  // DeepSeek V4.1 Flash
+        shared->caps.initialMarkings = m.initials;  // DeepSeek V4.1 Flash: what the wrapper can start
         break;
     case T::RunStarted:
         shared->startAnswered = true;

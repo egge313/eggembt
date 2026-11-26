@@ -44,6 +44,13 @@ struct PluginCapabilities {
     // wait for acknowledgeEvent() (doku section 19). Agents advertise this in
     // their hello; a run that needs it but cannot get it says so in a note.
     bool eventAcks = false;
+
+    // DeepSeek V4.1 Flash: the initial markings the plug-in can actually
+    // realise (doku section 41). startRun() already receives the marking's
+    // name; this capability lets the Session choose among the ones the SUT
+    // supports instead of discovering the mismatch mid-campaign. Empty means
+    // "not advertised": the Session tries every marking, as before.
+    std::vector<std::string> initialMarkings;
 };
 
 struct PluginRunOptions {

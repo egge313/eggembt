@@ -1,4 +1,5 @@
 #include "io/JsonNetLoader.h"
+#include "io/JsonNetWriter.h"  // DeepSeek V4.1 Flash: the annotation path (doku section 40)
 
 #include "MiniTest.h"
 
@@ -41,6 +42,112 @@ bool hasIssue(const LoadResult &r, LoadIssue::Severity sev, const std::string &p
             return true;
     }
     return false;
+}
+
+// DeepSeek V4.1 Flash: semantic comparison for the writer's round-trip tests.
+// The written document may omit default-valued keys, so the text differs from
+// the input; the loaded net must not.
+bool sameTokens(const pn::SparseMarking &a, const pn::SparseMarking &b)
+{
+    if (a.size() != b.size())
+        return false;
+    for (std::size_t i = 0; i < a.size(); ++i)
+        if (a[i].place != b[i].place || a[i].tokens != b[i].tokens)
+            return false;
+    return true;
+}
+
+bool sameArcs(const std::vector<pn::WeightedArc> &a, const std::vector<pn::WeightedArc> &b)
+{
+    if (a.size() != b.size())
+        return false;
+    for (std::size_t i = 0; i < a.size(); ++i)
+        if (a[i].place != b[i].place || a[i].weight != b[i].weight)
+            return false;
+    return true;
+}
+
+bool sameCrash(const std::optional<pn::CrashPrediction> &a,
+               const std::optional<pn::CrashPrediction> &b)
+{
+    if (a.has_value() != b.has_value())
+        return false;
+    if (!a)
+        return true;
+    return a->crashClass == b->crashClass && a->p == b->p && a->attempts == b->attempts
+           && a->crashDump == b->crashDump && a->maxDumps == b->maxDumps;
+}
+
+bool sameMarking(const pn::NamedMarking &a, const pn::NamedMarking &b)
+{
+    return a.name == b.name && sameTokens(a.tokens, b.tokens) && a.match == b.match
+           && a.intentional == b.intentional && a.policy == b.policy
+           && a.targetHits == b.targetHits && a.crashDump == b.crashDump
+           && a.maxDumps == b.maxDumps && sameCrash(a.crash, b.crash);
+}
+
+bool sameTransition(const pn::Transition &a, const pn::Transition &b)
+{
+    if (a.id != b.id || a.label != b.label || a.kind != b.kind || a.traced != b.traced
+        || a.synchronized != b.synchronized || a.unpredictable != b.unpredictable
+        || a.error != b.error || a.crashDump != b.crashDump || a.maxDumps != b.maxDumps
+        || a.milestone != b.milestone || a.milestoneRank != b.milestoneRank
+        || !sameCrash(a.crashPrediction, b.crashPrediction))
+        return false;
+    if (a.command.has_value() != b.command.has_value())
+        return false;
+    if (a.command && (a.command->run != b.command->run || a.command->mode != b.command->mode
+                      || a.command->times != b.command->times || a.command->when != b.command->when))
+        return false;
+    if (a.rare.has_value() != b.rare.has_value())
+        return false;
+    if (a.rare && (a.rare->p != b.rare->p || a.rare->attempts != b.rare->attempts
+                   || a.rare->waitForMs != b.rare->waitForMs))
+        return false;
+    return sameArcs(a.pre, b.pre) && sameArcs(a.post, b.post) && sameArcs(a.inhibit, b.inhibit);
+}
+
+// Writes the net, loads the document again, and compares everything the
+// loader and the writer know about.
+void checkWriterRoundTrip(const LoadResult &first)
+{
+    T_VERIFY2(first.ok(), minitest::cstr(first.report()));
+    if (!first.ok())
+        return;
+    const std::string doc = pn::toJsonModel(*first.net);
+    const LoadResult second = JsonNetLoader::loadJson(doc);
+    T_VERIFY2(second.ok(), minitest::cstr(second.report()));
+    if (!second.ok())
+        return;
+    T_VERIFY2(!second.hasWarnings(), minitest::cstr(second.report()));
+
+    const pn::Net &a = *first.net;
+    const pn::Net &b = *second.net;
+    T_COMPARE(b.name, a.name);
+    T_COMPARE(b.strategy.goals, a.strategy.goals);
+    T_COMPARE(b.strategy.errors, a.strategy.errors);
+    T_COMPARE(b.places.size(), a.places.size());
+    for (std::size_t i = 0; i < a.places.size() && i < b.places.size(); ++i) {
+        T_COMPARE(b.places[i].id, a.places[i].id);
+        T_COMPARE(b.places[i].bound, a.places[i].bound);
+    }
+    T_COMPARE(b.transitions.size(), a.transitions.size());
+    for (std::size_t i = 0; i < a.transitions.size() && i < b.transitions.size(); ++i)
+        T_VERIFY2(sameTransition(a.transitions[i], b.transitions[i]),
+                  a.transitions[i].id.c_str());
+
+    const auto sameList = [](const std::vector<pn::NamedMarking> &x,
+                             const std::vector<pn::NamedMarking> &y) {
+        if (x.size() != y.size())
+            return false;
+        for (std::size_t i = 0; i < x.size(); ++i)
+            if (!sameMarking(x[i], y[i]))
+                return false;
+        return true;
+    };
+    T_VERIFY(sameList(a.initialMarkings, b.initialMarkings));
+    T_VERIFY(sameList(a.targetMarkings, b.targetMarkings));
+    T_VERIFY(sameList(a.errorMarkings, b.errorMarkings));
 }
 
 }  // namespace
@@ -934,6 +1041,61 @@ struct TstJsonNetLoader {
         }
     }
 
+    // DeepSeek V4.1 Flash: the writer is the second half of the PNML import
+    // path (doku section 40). Every shipped model survives write + reload with
+    // the same meaning, and so does a model that uses every annotation the
+    // loader understands.
+    void writerRoundTripsTheShippedModels()
+    {
+        for (const char *file : {"drink-machine.json", "elevator-door.json", "atm.json"})
+            checkWriterRoundTrip(
+                JsonNetLoader::loadFile(std::string(EXAMPLES_DIR "/") + file));
+    }
+
+    void writerRoundTripsEveryAnnotation()
+    {
+        const char *doc = R"({
+  "version": 1,
+  "name": "writer-features",
+  "places": [{"id": "p", "bound": 5}, {"id": "q"}, {"id": "r"}],
+  "transitions": [
+    {"id": "in", "kind": "controllable", "label": "in"},
+    {"id": "out", "kind": "observable", "label": "out", "milestone": 2, "sync": true},
+    {"id": "work", "kind": "internal", "label": "work", "traced": false},
+    {"id": "bad", "kind": "observable", "label": "bad", "error": true,
+     "crash_dump": "snapshot", "max_dumps": 3},
+    {"id": "rareout", "kind": "observable", "label": "rareout",
+     "rare": {"p": 0.01, "attempts": 7, "wait-for": 25}},
+    {"id": "cmdout", "kind": "observable", "label": "cmdout",
+     "command": {"run": "true", "mode": "async", "times": 2, "when": "p"}},
+    {"id": "crashout", "kind": "observable", "label": "crashout", "unpredictable": true,
+     "crash": {"class": "often", "p": 0.4, "attempts": 9, "crash_dump": "crash", "max_dumps": 2}}
+  ],
+  "arcs": [
+    {"from": "p", "to": "in"}, {"from": "in", "to": "q"},
+    {"from": "q", "to": "out"}, {"from": "out", "to": "p"},
+    {"from": "q", "to": "work"}, {"from": "work", "to": "r"},
+    {"from": "r", "to": "bad"}, {"from": "bad", "to": "p"},
+    {"from": "p", "to": "rareout"}, {"from": "rareout", "to": "q"},
+    {"from": "p", "to": "cmdout"}, {"from": "cmdout", "to": "q"},
+    {"from": "p", "to": "crashout"}, {"from": "crashout", "to": "q"},
+    {"from": "r", "to": "in", "type": "inhibitor", "weight": 2}
+  ],
+  "markings": {
+    "initial": [{"name": "start", "tokens": {"p": 1}}],
+    "target": [{"name": "done", "tokens": {"q": 1}, "match": "covers", "intentional": true,
+                "crash": {"class": "sometimes", "p": 0.5}}],
+    "error": [
+      {"name": "oops", "tokens": {"r": 1}, "match": "covers", "policy": "once"},
+      {"name": "bad2", "tokens": {"q": 2}, "target_hits": 2, "crash_dump": "crash",
+       "max_dumps": 4}
+    ]
+  },
+  "strategy": {"goals": "targets", "errors": "avoid"}
+})";
+        checkWriterRoundTrip(JsonNetLoader::loadJson(doc));
+    }
+
     void unsupportedVersionIsRejected()
     {
         std::string doc = makeDoc();
@@ -1009,6 +1171,8 @@ int main()
     T_RUN(TstJsonNetLoader, syncKeyIsRejectedWhereItDoesNotApply);  // DeepSeek V4.1 Flash
     T_RUN(TstJsonNetLoader, rareKeyFormsAreParsed);  // DeepSeek V4.1 Flash
     T_RUN(TstJsonNetLoader, rareKeyIsValidatedAndNeedsVisibility);  // DeepSeek V4.1 Flash
+    T_RUN(TstJsonNetLoader, writerRoundTripsTheShippedModels);  // DeepSeek V4.1 Flash
+    T_RUN(TstJsonNetLoader, writerRoundTripsEveryAnnotation);  // DeepSeek V4.1 Flash
     T_RUN(TstJsonNetLoader, unsupportedVersionIsRejected);
     T_RUN(TstJsonNetLoader, syntaxErrorReportsPosition);
     T_RUN(TstJsonNetLoader, topLevelMustBeObject);

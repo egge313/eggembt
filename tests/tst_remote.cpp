@@ -181,8 +181,10 @@ static void testProtocolRoundTrips()
         m.snapshot = true;
         m.crash = false;
         m.restartMs = 2500;
+        m.initials = {"start", "alternate"};  // DeepSeek V4.1 Flash: what the wrapper can start
         const ProtocolMessage b = roundTrip(m);
         CHECK(b.name == m.name && b.snapshot && !b.crash && b.restartMs == 2500 && b.protocol == kProtocolVersion);
+        CHECK(b.initials.size() == 2 && b.initials[0] == "start" && b.initials[1] == "alternate");
     }
     {
         ProtocolMessage m;
@@ -503,6 +505,11 @@ static void testHelloCarriesTheCapabilities()
     CHECK(rig.plugin->agentName() == "fake-agent");
     const PluginCapabilities caps = rig.plugin->capabilities();
     CHECK(caps.snapshot && !caps.crash && caps.restartMs == 100);
+    // DeepSeek V4.1 Flash: the simulated SUT advertises every named initial
+    // marking of the model (doku section 41), and the hello carries them.
+    CHECK(caps.initialMarkings.size() == net.initialMarkings.size());
+    for (std::size_t i = 0; i < net.initialMarkings.size() && i < caps.initialMarkings.size(); ++i)
+        CHECK(caps.initialMarkings[i] == net.initialMarkings[i].name);
 }
 
 static void testACampaignOverTheProtocolReachesFullCoverage()

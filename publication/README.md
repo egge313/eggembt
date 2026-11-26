@@ -3,7 +3,7 @@
 `kettunen2026.tex` is a self-contained LaTeX article that defines, in mathematical
 terms, the Petri nets, reachability graph, coverage and target machinery, the
 off-target region, the ant-colony equations (including the T-suffix layer) and
-the suggester score used by `eggembt` at version `v0.0.7`.  The definitions
+the suggester score used by `eggembt` at version `v0.0.8`.  The definitions
 follow the implementation; the final correspondence section maps every symbol
 to its source file.
 
@@ -47,7 +47,12 @@ tracked.
 - abstract algorithms for lazy graph generation, one ant's walk and choice,
   pheromone deposition and evaporation, and event selection with and without
   the colony;
+- an application chapter built from the journal's campaigns: the model ladder,
+  the ATM campaign, the fork benchmark, the evaporation and run-length
+  experiments, the rare hunt and the limits of the evidence;
 - a table of default parameters and a symbol-to-code table.
 
 The engineering history behind the definitions, including the rename to
-`off-target`, is in `journal.md` sections 16, 36 and 38.
+`off-target`, is in `journal.md` sections 16, 36 and 38; the application
+chapter follows the campaigns recorded in sections 13, 25, 27, 30 and 32, and
+the import and initial-marking work is in section 41.

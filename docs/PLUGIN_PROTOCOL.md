@@ -36,7 +36,7 @@ The message types, by direction:
 The agent speaks first. On connecting, it sends:
 
 ```json
-{"type":"hello","protocol":1,"name":"drink-agent","snapshot":true,"crash":false,"restart_ms":2000,"sync":true}
+{"type":"hello","protocol":1,"name":"drink-agent","snapshot":true,"crash":false,"restart_ms":2000,"sync":true,"initials":["start","drivein-start"]}
 ```
 
 | field        | required | meaning                                                        |
@@ -47,13 +47,17 @@ The agent speaks first. On connecting, it sends:
 | `crash`      | no       | the agent can crash-dump the SUT (default false)               |
 | `restart_ms` | no       | typical time to restart the SUT; informational                 |
 | `sync`       | no       | the agent can hold the SUT at an event until the tracker acks it (default false; §2, *ack*) |
+| `initials`   | no       | names of the model's initial markings this agent can start the SUT in; absent means "no restriction" |
 
 The tracker waits for hello up to `--hello-timeout` (default 10000 ms). The
 capabilities decide what it will ever ask for: without `snapshot` it never
 requests a snapshot post-mortem, without `crash` never a crash, and without
 `sync` it never sends `sync_labels` (the run then goes on unsynchronized and
-says why in a note). The version stays 1: every addition is capability-gated
-and unknown fields are ignored.
+says why in a note). If `initials` is present, the tracker starts runs only in
+the listed markings and rotates over those; an explicit `--initial` the agent
+does not list aborts the run with the names the agent does offer. Without
+`initials` every initial marking is tried, exactly as before. The version stays
+1: every addition is capability-gated and unknown fields are ignored.
 
 ## 2. Messages from the tracker
 
@@ -323,7 +327,10 @@ messages" table above at hand while adapting either one.
 2. Send `hello` before reading anything else. Do nothing to the SUT before
    `start_run`.
 3. Answer `start_run` as soon as the SUT is started (or report `ok:false`
-   with the reason). Never wait for the SUT's first event first.
+   with the reason). Never wait for the SUT's first event first. If the SUT
+   cannot be put into every named initial marking of the model, list the ones
+   it can realise in hello (`"initials"`); the tracker then never asks for the
+   others.
 4. Tag every event with the `run` number, stamp `t` at capture, send events in
    capture order, and never wait for an answer to an event.
 5. After `quiescence_ms` of SUT silence, send a `quiescent` event (no label).
@@ -363,5 +370,7 @@ messages" table above at hand while adapting either one.
 ---
 
 The design context for this protocol is `journal.md` §8; synchronized events are
-`journal.md` §19. Document written on 14 November 2026 by DeepSeek V4.1 Flash; extended
-with synchronized events on 18 November 2026 by DeepSeek V4.1 Flash.
+`journal.md` §19 and the initial-marking capability is `journal.md` §41.
+Document written on 14 November 2026 by DeepSeek V4.1 Flash; extended
+with synchronized events on 18 November 2026 and with `initials` on 26 November
+2026 by DeepSeek V4.1 Flash.

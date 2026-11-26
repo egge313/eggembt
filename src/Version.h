@@ -29,6 +29,11 @@
 // v0.0.7 (24 November 2026): publication renamed to kettunen2026.tex, with
 // abstract algorithms for graph generation, ant movement, pheromone setting
 // and event selection (journal §38).
+//
+// v0.0.8 (25 November 2026): the publication gains an application chapter
+// built from the journal's campaigns, the Petri and Valmari citations, and a
+// keyword list (journal §40). The journal also records the machine's view of
+// extensions and pitfalls (journal §39).
 #pragma once
 
-#define EGGEMBT_VERSION "v0.0.7"
+#define EGGEMBT_VERSION "v0.0.8"

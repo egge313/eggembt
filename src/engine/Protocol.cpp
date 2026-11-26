@@ -100,6 +100,12 @@ std::string encodeMessage(const ProtocolMessage &m)
         o.set("crash", JsonValue::boolean(m.crash));
         o.set("restart_ms", JsonValue::number(static_cast<double>(m.restartMs)));
         o.set("sync", JsonValue::boolean(m.syncCapable));  // DeepSeek V4.1 Flash
+        if (!m.initials.empty()) {  // DeepSeek V4.1 Flash: the initial markings the agent can realise
+            JsonValue initials = JsonValue::array();
+            for (const std::string &name : m.initials)
+                initials.push(JsonValue::string(name));
+            o.set("initials", initials);
+        }
         break;
     case T::RunStarted:
         o.set("ok", JsonValue::boolean(m.ok));
@@ -197,6 +203,12 @@ bool decodeMessage(const std::string &line, ProtocolMessage &out, std::string *e
         m.restartMs = optInt(o, "restart_ms", 0);
         if (const JsonValue *v = o.find("sync"))  // DeepSeek V4.1 Flash: optional capability
             m.syncCapable = v->asBool();
+        if (const JsonValue *v = o.find("initials")) {  // DeepSeek V4.1 Flash
+            if (v->isArray())
+                for (const JsonValue &item : v->items())
+                    if (item.isString())
+                        m.initials.push_back(item.asString());
+        }
         break;
     }
     case T::RunStarted:

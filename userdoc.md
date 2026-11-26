@@ -296,6 +296,10 @@ PNML is accepted too: `eggembt check examples/coffee-pnml.pnml` and
 
 > PNML import.
 
+PNML itself has no targets, error markings, bounds or crash predictions. To
+test against such a model, convert it once with `eggembt import` (§8.7) and
+add the testing annotations to the JSON result.
+
 ---
 
 ## 3. The reachability graph
@@ -1195,6 +1199,7 @@ Commands:
   report MODEL     replay a run log and show the coverage reached so far
   compare MODEL    mutual overlap of two run logs' coverage (Jaccard, CSV for plots)
   export MODEL     write the model as standard PNML, with the eggembt extras as comments
+  import MODEL     convert PNML or JSON to the eggembt JSON model, ready for annotation
   agent-sim MODEL  serve a simulated SUT over standard input/output (an agent for 'run')
   version          print the version
   credits          print the credits
@@ -1238,6 +1243,16 @@ at a marked event until the tracker acknowledges it. `--simulate` and
 `eggembt agent-sim` can do this; an agent that cannot keeps the run
 unsynchronized, and the run notes why. The model marks the events with
 `"sync": true` and the campaign opts in with `--sync-events` (§2.3, §8.3).
+
+A plug-in may also restrict the **initial markings** it can realise: its
+hello lists their names (`"initials": ["start", "drivein-start"]`). The
+tracker then rotates only over the listed markings; an explicit `--initial`
+the plug-in does not list aborts the run and names what the plug-in does
+offer, instead of starting the SUT in the wrong state. An agent that omits
+the field is asked for every initial marking, exactly as before. The
+capability matters most for a wrapper that can only start its SUT one way:
+without it, the model's other initial markings would be a promise the
+wrapper silently breaks.
 
 **What a plug-in must contain.** An agent is a process that speaks the line
 protocol in `docs/PLUGIN_PROTOCOL.md`: it sends `hello`; answers `start_run`
@@ -1581,6 +1596,28 @@ One technical detail: PNML ids must be XML names. A model whose place or
 transition id is not (say, `1 bad place`) is exported with a generated id
 (`p0`, `t0`); the original id stays in `<name>` and in the annotation block,
 so nothing is lost, but the imported net uses the generated id.
+
+### 8.7 Importing a model for annotation
+
+`eggembt import MODEL [--output FILE] [--strict]` is the annotation path. It
+reads a model through the same validating loader as `check` and `run` — PNML
+by content sniffing, or an eggembt JSON model — and writes the complete
+eggembt JSON form. Without `--output` the document goes to standard output
+(warnings still go to standard error); with it, a one-line summary names the
+file and the place and transition counts.
+
+The point is PNML. A PNML file describes the net, not the test: it has no
+target markings, error markings, place bounds, testing strategy or crash
+predictions. `import` therefore produces a JSON model with the net intact —
+places, transitions, kinds, labels, milestones, normal and inhibitor arcs with
+their weights, and the initial marking — and with the testing annotations
+simply absent. Add them to the JSON file, then `check` and `run` it. The
+imported model is not a replacement for the PNML file; it is the editable
+specification the PNML file cannot be.
+
+An eggembt JSON model can be imported too. That is a normalising round trip:
+default-valued keys are omitted, key order is canonical, and the result is
+pretty-printed for editing. The meaning is unchanged.
 
 ---
 
@@ -2003,6 +2040,7 @@ What the number is **not**:
 | **command hook** | a shell command attached to a transition (`"command"`); runs when its step is certainly fired, synchronously or asynchronously, once or always, optionally guarded by a place (§9) |
 | **hook record** | the record of one hook execution (status, exit code, captured output); it travels in the run log, the command is not run again on a restore (§9) |
 | **synchronized event** | a step of the SUT's own (`"sync": true`) at which the SUT is held until the tracker acknowledged the event; opt-in per transition and per campaign (`--sync-events`), capability-gated on the plug-in (§2.3) |
+| **initial-marking capability** | the names a plug-in lists in its hello (`"initials"`) as the initial markings it can realise; the tracker rotates only over those, and an explicit `--initial` outside the list aborts the run (§8.2) |
 | **ack** | the tracker's "handled, go on" for a synchronized event; it comes after the event's consequences, including a post-mortem, never for an ordinary event |
 | **lifecycle input** | a controllable transition whose label is one of the reserved words `start`, `restart`, `stop`, `pause`, `resume`: the tester sends it, the SUT's own control does the work, and the engine supplies the landing or closes the gate (§2.3) |
 | **lifecycle gate** | what the campaign may send next: **Running** (everything), **Paused** (`resume`, `stop`, `restart`), **Down** (`start`, `restart`); silence is expected while not Running (§2.3) |

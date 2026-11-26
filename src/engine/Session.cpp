@@ -379,11 +379,58 @@ void Session::rebuildPheromones(const PersistedRun &run, const RunRecord &rec)
     }
 }
 
-std::size_t Session::pickInitialMarking()
+std::optional<std::size_t> Session::pickInitialMarking(const PluginCapabilities &caps, std::string *error)
 {
-    if (cfg_.initialMarkings.empty())
-        return runCounter_ % net_.initialMarkings.size();
-    return cfg_.initialMarkings[runCounter_ % cfg_.initialMarkings.size()];
+    // DeepSeek V4.1 Flash: an agent may know that its SUT cannot be put into
+    // every initial state of the model (doku section 41). The capability is a
+    // list of names; empty means "not advertised", so every marking is tried.
+    const auto supported = [&](std::size_t index) {
+        if (caps.initialMarkings.empty())
+            return true;
+        const std::string &name = net_.initialMarkings[index].name;
+        return std::find(caps.initialMarkings.begin(), caps.initialMarkings.end(), name)
+               != caps.initialMarkings.end();
+    };
+    const auto offers = [&]() {
+        std::string names;
+        for (const std::string &name : caps.initialMarkings)
+            names += (names.empty() ? "" : ", ") + name;
+        return names;
+    };
+
+    std::vector<std::size_t> candidates;
+    if (cfg_.initialMarkings.empty()) {
+        for (std::size_t i = 0; i < net_.initialMarkings.size(); ++i)
+            if (supported(i))
+                candidates.push_back(i);
+        if (candidates.empty()) {
+            if (error)
+                *error = "the plug-in cannot start in any of the model's initial markings (it offers: "
+                         + offers() + ")";
+            return std::nullopt;
+        }
+    } else {
+        // An explicit --initial is a promise: if the plug-in cannot realise
+        // one of the requested markings, say so instead of silently running a
+        // different one.
+        for (std::size_t i : cfg_.initialMarkings) {
+            if (i >= net_.initialMarkings.size())
+                continue;
+            if (!supported(i)) {
+                if (error)
+                    *error = "the plug-in cannot start in the requested initial marking \""
+                             + net_.initialMarkings[i].name + "\" (it offers: " + offers() + ")";
+                return std::nullopt;
+            }
+            candidates.push_back(i);
+        }
+        if (candidates.empty()) {
+            if (error)
+                *error = "no initial marking was selected";
+            return std::nullopt;
+        }
+    }
+    return candidates[runCounter_ % candidates.size()];
 }
 
 RunReport Session::runOnce(ISutPlugin &plugin)
@@ -396,14 +443,23 @@ RunReport Session::runOnce(ISutPlugin &plugin)
         return rep;
     }
 
-    const std::size_t initialIdx = pickInitialMarking();
+    // DeepSeek V4.1 Flash: the plug-in says which initial markings it can
+    // realise, so the choice is made with that knowledge (doku section 41).
+    // Asking before the run costs nothing; an explicit --initial that the
+    // plug-in cannot honour is an aborted run, not a silent substitution.
+    const PluginCapabilities caps = plugin.capabilities();
+    std::string initialError;
+    const std::optional<std::size_t> initialIdx = pickInitialMarking(caps, &initialError);
+    if (!initialIdx) {
+        rep.detail = initialError;
+        return rep;
+    }
     const Clock::time_point startedAt = Clock::now();  // GLM-5.3-Flash: run duration
     // DeepSeek V4.1 Flash: a direct runOnce with a budget gets its own deadline;
     // runCampaign already set the campaign-wide one.
     const bool ownDeadline = !deadline_ && cfg_.timeBudget.count() > 0;
     if (ownDeadline)
         deadline_ = startedAt + cfg_.timeBudget;
-    const PluginCapabilities caps = plugin.capabilities();
 
     // DeepSeek V4.1 Flash: does this run hold synchronized events (doku section
     // 19)? The model opts in per transition and the campaign as a whole; the
@@ -423,7 +479,7 @@ RunReport Session::runOnce(ISutPlugin &plugin)
     }
 
     queue_.reset();
-    tracker_.beginRun(initialIdx, "session run " + std::to_string(runCounter_));
+    tracker_.beginRun(*initialIdx, "session run " + std::to_string(runCounter_));
     ++runCounter_;
     rep.id = static_cast<RunId>(db_.numRuns() - 1);
 
@@ -468,7 +524,7 @@ RunReport Session::runOnce(ISutPlugin &plugin)
     };
 
     std::string err;
-    if (plugin.startRun(net_.initialMarkings[initialIdx].name, runOptions, queue_, &err))
+    if (plugin.startRun(net_.initialMarkings[*initialIdx].name, runOptions, queue_, &err))
         pluginStarted = true;
     else
         finish(RunOutcome::Aborted, "the plug-in could not start the run: " + err, StopReason::Aborted);

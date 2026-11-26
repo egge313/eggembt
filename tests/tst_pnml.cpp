@@ -7,6 +7,7 @@
 
 #include "engine/Json.h"       // DeepSeek V4.1 Flash: the export's annotations are JSON
 #include "engine/Session.h"
+#include "io/JsonNetWriter.h"  // DeepSeek V4.1 Flash: PNML -> annotatable JSON (doku section 40)
 #include "io/PnmlWriter.h"     // DeepSeek V4.1 Flash
 #include "model/NetBuilder.h"  // DeepSeek V4.1 Flash
 #include "FakeSut.h"
@@ -614,6 +615,39 @@ struct TstPnml {
         T_COMPARE(again.net->initialMarkings.size(), r.net->initialMarkings.size());
         T_COMPARE(again.net->initialMarkings[0].tokens.size(), r.net->initialMarkings[0].tokens.size());
     }
+
+    // DeepSeek V4.1 Flash: the import path of doku section 40. PnmlLoader and
+    // JsonNetWriter are its two halves; the result must load through the JSON
+    // path and must not pretend that PNML carried testing annotations.
+    void importShippedExampleBecomesAnAnnotatableModel()
+    {
+        const LoadResult first =
+            PnmlLoader::loadFile(std::string(EXAMPLES_DIR "/coffee-pnml.pnml"));
+        T_VERIFY2(first.ok(), minitest::cstr(first.report()));
+        const std::string doc = pn::toJsonModel(*first.net);
+        const LoadResult second = JsonNetLoader::loadJson(doc);
+        T_VERIFY2(second.ok(), minitest::cstr(second.report()));
+
+        T_COMPARE(second.net->name, first.net->name);
+        T_COMPARE(second.net->places.size(), first.net->places.size());
+        T_COMPARE(second.net->transitions.size(), first.net->transitions.size());
+        T_COMPARE(second.net->initialMarkings.size(), first.net->initialMarkings.size());
+        T_COMPARE(second.net->targetMarkings.size(), std::size_t(0));  // PNML cannot say
+        T_COMPARE(second.net->errorMarkings.size(), std::size_t(0));
+        for (std::size_t i = 0; i < first.net->transitions.size(); ++i) {
+            const pn::Transition &a = first.net->transitions[i];
+            const pn::Transition &b = second.net->transitions[i];
+            T_COMPARE(b.id, a.id);
+            T_COMPARE(b.kind, a.kind);
+            T_COMPARE(b.label, a.label);
+            T_COMPARE(b.milestone, a.milestone);
+            if (a.milestone)
+                T_COMPARE(b.milestoneRank, a.milestoneRank);
+            T_COMPARE(b.pre.size(), a.pre.size());
+            T_COMPARE(b.post.size(), a.post.size());
+            T_COMPARE(b.inhibit.size(), a.inhibit.size());
+        }
+    }
 };
 
 int main()
@@ -643,5 +677,6 @@ int main()
     T_RUN(TstPnml, exportRoundTrip);
     T_RUN(TstPnml, exportUnsafeIdsStillLoad);
     T_RUN(TstPnml, exportShippedExampleRoundTrips);
+    T_RUN(TstPnml, importShippedExampleBecomesAnAnnotatableModel);  // DeepSeek V4.1 Flash
     return T_SUMMARY();
 }

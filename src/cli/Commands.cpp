@@ -8,8 +8,9 @@
 #include "engine/Session.h"
 #include "engine/SimulatedSut.h"
 #include "io/JsonNetLoader.h"
-#include "io/PnmlLoader.h"  // GLM-5.3-Flash
-#include "io/PnmlWriter.h"  // DeepSeek V4.1 Flash: PNML export (doku section 27)
+#include "io/JsonNetWriter.h"  // DeepSeek V4.1 Flash: JSON import/annotation path (doku section 40)
+#include "io/PnmlLoader.h"     // GLM-5.3-Flash
+#include "io/PnmlWriter.h"     // DeepSeek V4.1 Flash: PNML export (doku section 27)
 #include "io/RunLogIO.h"
 #include "io/Transports.h"
 #include "model/Fingerprint.h"
@@ -301,6 +302,7 @@ void printUsage(std::ostream &out)
         << "  report MODEL     replay a run log and show the coverage reached so far\n"
         << "  compare MODEL    mutual overlap of two run logs' coverage (Jaccard, CSV for plots)\n"
         << "  export MODEL     write the model as standard PNML, with the eggembt extras as comments\n"  // DeepSeek V4.1 Flash
+        << "  import MODEL     convert PNML or JSON to the eggembt JSON model, ready for annotation\n"  // DeepSeek V4.1 Flash
         << "  agent-sim MODEL  serve a simulated SUT over standard input/output (an agent for 'run')\n"
         << "  version          print the version\n"
         << "  credits          print the credits\n"  // GLM-5.3-Flash
@@ -337,6 +339,17 @@ static void printCommandHelp(std::ostream &out, const std::string &command)
             << "transition tags, crash predictions and the testing strategy) is written as XML\n"
             << "comments and as one machine-readable <toolspecific> block. Those annotations do\n"
             << "not survive a PNML import -- the JSON model remains the complete specification.\n\n"
+            << "  --output FILE   write to FILE instead of standard output\n"
+            << "  --strict        treat warnings as errors (exit 2)\n";
+    } else if (command == "import") {
+        // DeepSeek V4.1 Flash: PNML/JSON -> eggembt JSON (doku section 40).
+        out << "eggembt import MODEL [--output FILE] [--strict] [--no-color]\n\n"
+            << "Converts a model to the eggembt JSON format. PNML is read through the same\n"
+            << "validating loader as check and run: places, transitions, normal and inhibitor\n"
+            << "arcs, weights, the unioned initial marking and the eggembt toolspecific\n"
+            << "kind/label/milestone conventions survive. Everything PNML cannot express --\n"
+            << "target and error markings, place bounds, crash predictions, the testing\n"
+            << "strategy -- is absent from the result and must be added to the JSON model.\n\n"
             << "  --output FILE   write to FILE instead of standard output\n"
             << "  --strict        treat warnings as errors (exit 2)\n";
     } else if (command == "run") {
@@ -781,6 +794,55 @@ int cmdExport(const std::vector<std::string> &argv, std::ostream &out, std::ostr
         return kExitUsage;
     }
     out << "PNML written to " << args.get("output") << " (" << net->places.size() << " places, "
+        << net->transitions.size() << " transitions)\n";
+    return kExitOk;
+}
+
+// ===========================================================================
+// import
+// ===========================================================================
+
+// DeepSeek V4.1 Flash: the annotation path for PNML (doku section 40). PNML
+// is loaded through the same validating path as every other command and then
+// written as the complete eggembt JSON model; the user adds targets, errors,
+// bounds, crash predictions and the strategy there. Without --output the
+// document is the only thing on standard output, so it can be redirected.
+int cmdImport(const std::vector<std::string> &argv, std::ostream &out, std::ostream &err)
+{
+    ArgSpec spec;
+    addCommonSpec(spec);
+    spec.flags.insert("strict");
+    spec.valued.insert("output");
+    Args args;
+    std::string error;
+    Console plain{out, err};
+    if (!parseArgs(argv, spec, args, &error))
+        return usageError(plain, error, "import");
+    const Console con = makeConsole(args, out, err);
+    if (args.has("help")) {
+        printCommandHelp(out, "import");
+        return kExitOk;
+    }
+    if (args.positional.size() != 1)
+        return usageError(con, "expected exactly one model file", "import");
+
+    const std::optional<Net> net = loadModel(args.positional[0], con, args.has("strict"));
+    if (!net)
+        return kExitUsage;
+
+    const std::string document = toJsonModel(*net);
+    if (!args.given("output")) {
+        out << document;
+        return kExitOk;
+    }
+    std::ofstream f(args.get("output"), std::ios::binary);
+    if (f)
+        f << document;
+    if (!f) {
+        err << "eggembt import: cannot write " << args.get("output") << "\n";
+        return kExitUsage;
+    }
+    out << "JSON model written to " << args.get("output") << " (" << net->places.size() << " places, "
         << net->transitions.size() << " transitions)\n";
     return kExitOk;
 }

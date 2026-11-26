@@ -18,6 +18,10 @@ PluginCapabilities SimulatedSut::capabilities() const
     caps.crash = opt_.crash;
     caps.restartMs = 100;
     caps.eventAcks = opt_.eventAcks;
+    // DeepSeek V4.1 Flash: the simulator can start in every named initial
+    // marking of the model, so it advertises them all (doku section 41).
+    for (const NamedMarking &m : net_.initialMarkings)
+        caps.initialMarkings.push_back(m.name);
     return caps;
 }
 

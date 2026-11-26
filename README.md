@@ -1018,3 +1018,35 @@ The product version is now `v0.0.7` to match the branch: `src/Version.h`,
 `eggembt version` prints `v0.0.7`. The suite is unchanged: 19 CTest entries,
 18 unit suites (300 tests) and 42 CLI scenarios, all green. `journal.md` §38
 records the step; §37's `main.tex` and `v0.0.6` references remain historical.
+
+### DeepSeek V4.1 Flash — v0.0.8: the paper looks at its campaigns, and PNML becomes editable
+
+The publication gains the section *Application: what the campaigns found*,
+built from the journal rather than invented for the paper: the ladder of
+models, the ATM campaign, the fork benchmark, the evaporation boundary, the
+10,000-state run-length experiment, the rare hunt and an honest list of what
+the applications do not show. Petri's 1962 thesis and Valmari's survey *The
+State Explosion Problem* are cited, and a keyword list follows the abstract.
+The draft is dated 25 November 2026 and names `v0.0.8`. TeX Live is not
+installed in this environment, so the PDF was not rebuilt here; the source
+was reviewed by hand.
+
+`eggembt import MODEL [--output FILE] [--strict]` converts PNML or an eggembt
+JSON model to the eggembt JSON form. PNML has no targets, errors, bounds,
+strategy or crash predictions; the command writes the net intact and leaves
+those annotations for the modeller. The writer is
+`src/io/JsonNetWriter.{h,cpp}`, and the shipped `atm.json` and PNML example
+round-trip with the same meaning.
+
+A plug-in can now list the initial markings it can realise in its hello
+(`"initials"`). The Session rotates only over those and refuses an explicit
+`--initial` the plug-in does not offer, naming what it does offer. The
+simulated SUT advertises every marking of the model; the reference agent
+advertises `start`.
+
+The product version is now `v0.0.8` to match the branch: `src/Version.h`,
+`cli_test.sh`, `INSTALL.md`, `publication/kettunen2026.tex` and
+`publication/README.md` all agree. The suite is 19 CTest entries, 18 unit
+suites (304 tests) and 43 CLI scenarios, all green. `journal.md` §39 records
+the machine's view of extensions and pitfalls, §40 the publication step and
+§41 the import path and the initial-marking capability.

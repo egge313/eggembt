@@ -30,6 +30,7 @@ void AgentServer::start()
     hello.crash = caps.crash;
     hello.restartMs = caps.restartMs;
     hello.syncCapable = caps.eventAcks;  // DeepSeek V4.1 Flash
+    hello.initials = caps.initialMarkings;  // DeepSeek V4.1 Flash: what the wrapper can start
     send(hello);
     forwarder_ = std::thread([this] { forward(); });
 }

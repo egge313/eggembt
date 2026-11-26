@@ -2823,6 +2823,117 @@ static void testAPluginThatCannotAckIsNoted()
         CHECK(!contains(n, "cannot acknowledge events"));
 }
 
+// DeepSeek V4.1 Flash: two initial markings the SUT can tell apart by name,
+// each with its own corridor and its own target marking (doku section 41).
+static Net makeTwoStartNet()
+{
+    NetBuilder b("two-starts");
+    const auto lobby = b.place("lobby");
+    const auto drivein = b.place("drivein");
+    const auto useLobby = b.transition("use-lobby", TransitionKind::Controllable, "use.lobby");
+    const auto useDrivein = b.transition("use-drivein", TransitionKind::Controllable, "use.drivein");
+    b.input(lobby, useLobby).output(useLobby, lobby);
+    b.input(drivein, useDrivein).output(useDrivein, drivein);
+    b.initial("lobby-start", {{lobby, 1}});
+    b.initial("drivein-start", {{drivein, 1}});
+    b.targetMarking("lobby-idle", {{lobby, 1}});
+    b.targetMarking("drivein-idle", {{drivein, 1}});
+    return b.build();
+}
+
+// A simulated SUT that advertises a chosen subset of the model's initial
+// markings and records every name it is actually asked to start in.
+class AdvertisedStartSut final : public ISutPlugin
+{
+public:
+    AdvertisedStartSut(const Net &net, std::vector<std::string> advertised)
+        : inner_(net), advertised_(std::move(advertised))
+    {
+    }
+
+    PluginCapabilities capabilities() const override
+    {
+        PluginCapabilities caps = inner_.capabilities();
+        caps.initialMarkings = advertised_;
+        return caps;
+    }
+    bool startRun(const std::string &initial, const PluginRunOptions &options, EventQueue &events,
+                  std::string *error) override
+    {
+        started_.push_back(initial);
+        return inner_.startRun(initial, options, events, error);
+    }
+    bool stimulate(const std::string &label, std::string *error) override
+    {
+        return inner_.stimulate(label, error);
+    }
+    void acknowledgeEvent(std::uint64_t queueSeq) override
+    {
+        inner_.acknowledgeEvent(queueSeq);
+    }
+    PostMortem postMortem(DumpMode mode) override { return inner_.postMortem(mode); }
+    void stopRun(StopReason reason) override { inner_.stopRun(reason); }
+    std::string pollFault() override { return inner_.pollFault(); }
+
+    const std::vector<std::string> &started() const { return started_; }
+
+private:
+    FakeSut inner_;
+    std::vector<std::string> advertised_;
+    std::vector<std::string> started_;
+};
+
+// DeepSeek V4.1 Flash: the plug-in's hello may list the initial markings its
+// SUT can realise (doku section 41). The Session filters the model's list,
+// keeps the round-robin over what remains, and refuses an explicit --initial
+// the plug-in cannot honour instead of starting the SUT in the wrong state.
+static void testThePluginChoosesWhichInitialMarkingsAreTried()
+{
+    const Net net = makeTwoStartNet();
+    {
+        // Only one marking is advertised; every run starts there.
+        AdvertisedStartSut sut(net, {"drivein-start"});
+        Session session(net, quick());
+        CHECK(session.runOnce(sut).outcome != RunOutcome::Aborted);
+        CHECK(session.runOnce(sut).outcome != RunOutcome::Aborted);
+        CHECK(sut.started().size() == 2);
+        CHECK(sut.started()[0] == "drivein-start");
+        CHECK(sut.started()[1] == "drivein-start");
+    }
+    {
+        // Nothing advertised: the historical round-robin over all markings.
+        AdvertisedStartSut sut(net, {});
+        Session session(net, quick());
+        CHECK(session.runOnce(sut).outcome != RunOutcome::Aborted);
+        CHECK(session.runOnce(sut).outcome != RunOutcome::Aborted);
+        CHECK(sut.started().size() == 2);
+        CHECK(sut.started()[0] == "lobby-start");
+        CHECK(sut.started()[1] == "drivein-start");
+    }
+    {
+        // An explicit --initial the plug-in cannot realise is a clear abort.
+        AdvertisedStartSut sut(net, {"drivein-start"});
+        SessionConfig cfg = quick();
+        cfg.initialMarkings = {0};  // lobby-start
+        Session session(net, cfg);
+        const RunReport r = session.runOnce(sut);
+        CHECK(r.outcome == RunOutcome::Aborted);
+        CHECK(contains(r.detail, "cannot start"));
+        CHECK(contains(r.detail, "lobby-start"));
+        CHECK(contains(r.detail, "drivein-start"));  // it says what it offers
+        CHECK(sut.started().empty());
+    }
+    {
+        // Nothing in common: abort before the SUT is touched.
+        AdvertisedStartSut sut(net, {"somewhere-else"});
+        Session session(net, quick());
+        const RunReport r = session.runOnce(sut);
+        CHECK(r.outcome == RunOutcome::Aborted);
+        CHECK(contains(r.detail, "cannot start in any"));
+        CHECK(sut.started().empty());
+    }
+}
+
 int main()
 {
     const std::vector<std::pair<const char *, std::function<void()>>> tests = {
@@ -2880,6 +2991,7 @@ int main()
         {"withoutTheSwitchNothingIsHeld", testWithoutTheSwitchNothingIsHeld},  // DeepSeek V4.1 Flash
         {"thePostMortemSeesTheHeldStack", testThePostMortemSeesTheHeldStack},  // DeepSeek V4.1 Flash
         {"aPluginThatCannotAckIsNoted", testAPluginThatCannotAckIsNoted},  // DeepSeek V4.1 Flash
+        {"thePluginChoosesWhichInitialMarkingsAreTried", testThePluginChoosesWhichInitialMarkingsAreTried},  // DeepSeek V4.1 Flash
         {"theTestingStrategyLandsInTheWeights", testStrategyProfiles},  // DeepSeek V4.1 Flash
         {"theWallClockBudgetEndsTheCampaign", testTheWallClockBudgetEndsTheCampaign},  // DeepSeek V4.1 Flash
         {"aRareDwellSuspendsTheIdleTimeout", testARareDwellSuspendsTheIdleTimeout},  // DeepSeek V4.1 Flash

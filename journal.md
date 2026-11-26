@@ -2800,3 +2800,417 @@ warnings are the symbol-table cells that were already there.
 `cli_test.sh`. A direct run of `cli_test.sh` reports 42 tests and 0 failures,
 and `build/eggembt version` prints `eggembt v0.0.7`. The changes are staged
 for Egge to commit and push.
+
+## 39. Extensions and pitfalls: a machine's view (25 November 2026, DeepSeek V4.1 Flash)
+
+Egge's TODO item 4 asks the artificial intelligence to ponder possible
+extensions and pitfalls and to store the result in the journal. This section
+is deliberately speculative. It is not a commitment, it does not describe
+implemented behaviour, and it should be read beside the limits already
+recorded in `userdoc.md` §12 and journal §35.
+
+### What the current design gets right
+
+The separation of concerns is the strongest part. The ants walk only the
+model, never the SUT; the belief tracker is the only component that has to
+reason about what the SUT might have done; the suggester spends the colony's
+knowledge on one input at a time; and the run log keeps the evidence. The
+lazy reachability graph, the explicit `incomplete`/`truncated` flags and the
+"certain findings only" rule for livelocks are the right response to state
+explosion: the tool admits what it has not seen instead of inventing a
+deadlock at the frontier. The two pheromone channels with different
+evaporation rates, the static off-target channel and the optional T-suffix
+store give the search several time scales without turning the model into a
+program.
+
+The journal already contains the empirical lessons: the crash research
+window (§19), the ATM model that exercises several initial markings and crash
+predictions (§21), the edge-channel saturation and pair-layer findings
+(§31--§32), the merge-time evaporation rule (§34), and the cost of the rare
+hunt (§33). Those are the places to start an application chapter, not a new
+toy model.
+
+### Extensions worth considering
+
+1. **A real import path, not only a reader.** `PnmlLoader` reads PNML into
+   `pn::Net`, and `check`/`run` accept it directly, but there is no
+   `import` command that writes an eggembt JSON model for later annotation.
+   A useful import would preserve place and transition ids, emit the first
+   initial marking as the standard one, and put the rest in an explicit
+   sidecar or in the JSON form. The hard part is honesty: PNML cannot carry
+   bounds, target/error markings, milestones, rare transitions, crash
+   predictions or the eggembt label conventions, so an import must say what
+   it lost rather than pretend a round-trip is an identity. This is TODO
+   item 2, and it is a better first extension than another heuristic.
+
+2. **Initial-marking capability negotiation.** The wire protocol already
+   sends `initial` in `start_run`, and `SimulatedSut` maps the name to the
+   named marking. A real wrapper must do the same mapping; some SUTs cannot
+   be put into every model initial state. The honest extension is a
+   capability in `hello` (for example the list of initial names the wrapper
+   can realise), so the session can skip unsupported markings or fail with a
+   precise message instead of aborting mid-campaign. The reference agent
+   deliberately supports only `start`; that is a good example of a wrapper
+   saying what it can do. This is TODO item 1.
+
+3. **State-space reduction with a coverage semantics.** Stubborn sets and
+   partial-order reduction (the Valmari line of work) can shrink the graph
+   dramatically, but the current goals are edges, transitions and markings,
+   and the ants deposit on RG edges. A quotient graph would have to define
+   what an edge visit means, which deposits survive the quotient, and
+   whether a covered quotient edge implies the original edges are covered.
+   Doing this badly would make coverage look better than it is. The same
+   warning applies to symmetry reduction and to merging markings that differ
+   only in parts of the state no target can observe.
+
+4. **Temporal properties over places.** Journal §35 records the open design:
+   `G`, `F`, `X`, `U`, `AND`, `OR`, `NOT`, `IMPLIES`, with `require`,
+   `forbid` and `seek` semantics. The runtime monitor is the tractable first
+   step; a static search is only honest for safety properties without
+   fairness questions. The open questions there (universal vs existential
+   over the belief, finite runs, fairness, interaction with a sought error)
+   are real and should not be papered over by a parser.
+
+5. **Data-oriented tests through the command hooks.** The tool deliberately
+   has no data variables. `userdoc.md` §9 shows how command hooks can invoke
+   data-oriented tests, and that is the right boundary: keep the net
+   finite-state and let an external harness own the data. A typed parameter
+   layer, boundary-value generation or symbolic guards would turn the model
+   into a program and undermine the reachability analysis. If data is added,
+   it should be as an explicit interface with its own oracle, not as hidden
+   state in the net.
+
+6. **Automatic tuning, with a reproducibility contract.** Evaporation rates,
+   back-propagation depth, the T-suffix length and the suggester weights are
+   currently defaults plus command-line options. A bandit or Bayesian
+   optimiser could tune them per model, but every campaign must remain
+   reproducible from its seed and every reported number must say which
+   parameters produced it. Tuning on the same campaign that is used to claim
+   an improvement is overfitting, especially on the small models in
+   `examples/`.
+
+7. **Parallel and distributed campaigns.** Several initial markings, several
+   ATMs or several machines invite parallel runs. The hard parts are not the
+   threads: they are merging pheromone without erasing a rare catastrophe,
+   keeping the run log deterministic enough to replay, and deciding whether a
+   target hit in one shard should veto a path in another. A conservative
+   first step is to shard by initial marking and merge only at run
+   boundaries, as the restored-pheromone path already does.
+
+8. **Better explanations, not only better scores.** The suggester can say
+   which input it chose and why, but a user often needs to know why a target
+   is unreachable, why an edge is never covered, or why a run was vetoed.
+   Counterexample traces, coverage holes with shortest witnesses, and a
+   "what would have to change" report would be more valuable than a slightly
+   better heuristic. The existing backtraces and overlap index are the
+   foundation.
+
+9. **Statistical stopping rules.** "Coverage complete" is a structural
+   statement, not a statement about the SUT's remaining fault probability.
+   Confidence intervals per transition, a stopping rule based on the
+   observed failure rate, and a distinction between "not covered" and
+   "covered only in one context" would make campaigns easier to defend. This
+   is especially relevant when the model is large and the budget is finite.
+
+10. **A safer plug-in boundary.** The agent protocol is line-oriented JSON
+    with timeouts and capability negotiation, which is a good start. A
+    production wrapper still needs limits on message size, a clear policy for
+    malformed or duplicate events, authentication for TCP, and a way to
+    report "I cannot reset this SUT" without hanging the campaign. The
+    missing/extra-message table in `docs/PLUGIN_PROTOCOL.md` is the right
+    place to keep those rules explicit.
+
+### Pitfalls
+
+- **State explosion is not solved by a lazy graph.** Laziness postpones the
+  explosion; it does not remove it. The state limit, the truncation flags and
+  the "certain findings only" rule are essential, but a campaign that hits
+  the cap is testing a subset of the model and must say so.
+- **Coverage is not correctness.** A covered edge means the model allowed
+  the step, not that the SUT behaved correctly in every data or timing
+  context. The oracle is only as good as the model, and the model is only as
+  good as its author.
+- **The model and the SUT can drift.** Pheromone, run logs and coverage are
+  tied to a model version. Reusing a log after editing places, transitions or
+  targets can credit the wrong edge. The model fingerprint helps, but the
+  campaign report should make the version explicit.
+- **Initial markings are not interchangeable.** The ATM example (§21) makes
+  this concrete: three initial markings with identical tokens would rotate
+  invisibly, so the model gives them different cassette levels. A wrapper
+  that ignores the `initial` name can start the SUT in the wrong state while
+  the tracker believes the model's marking. That is a silent oracle error,
+  not a cosmetic one.
+- **PNML round-trips lose the testing annotations.** PNML has one initial
+  marking and no targets, errors, milestones, rare transitions, crash
+  predictions or bounds. An import that silently drops them produces a model
+  that looks complete and tests less. Warnings are necessary but not
+  sufficient; the imported JSON should carry an explicit "needs annotation"
+  marker.
+- **Pheromone can lock in a bad lesson.** Attraction saturates, a sought
+  target can outshout a fresh edge, and the pair layer only helps when the
+  same route repeats. The evaporation and saturation rules mitigate this,
+  but a long run can still carry a stale lesson to its end. The journal's
+  benchmark results are a warning against tuning on one shape.
+- **Timing assumptions are part of the oracle.** Quiescence, idle timeouts,
+  the rare dwell and synchronized events all assume something about the
+  SUT's silence. A slow but correct SUT can look stuck; a fast but
+  nondeterministic one can look deviant. The options make the assumptions
+  explicit, but they do not make them true.
+- **Reproducibility is fragile.** A campaign depends on the simulator seed,
+  the suggester seed, the order of files, the platform's timing and the
+  order of events from the SUT. "Deterministic per seed" is a claim about the
+  tool's own choices, not about a distributed SUT. Reports should separate
+  the two.
+- **The heuristic is not a proof.** The ants explore; they do not establish
+  reachability, liveness or fairness. A target that the ants never reach may
+  still be reachable, and a path they prefer may be the wrong one. The static
+  analyses and the belief tracker are the correctness-facing parts; the
+  colony is a search strategy.
+- **Benchmarks can become the specification.** The 1000-state diamond, the
+  corridor models and the ATM are useful because they isolate one effect at
+  a time. They are not a representative sample of industrial models. A
+  publication that reports only these numbers should say so.
+- **AI-generated artefacts need the same suspicion as human ones.** The
+  code, the documentation and this journal were written with AI assistance.
+  The code is the ground truth, the tests are the evidence, and a plausible
+  sentence in a paper is not evidence. The version pin in the publication is
+  there for a reason.
+- **Security and side effects are outside the model.** A command hook or a
+  plug-in can delete a database, open a network connection or leave a device
+  in a bad state. The model can describe the intended effect, not the
+  permission to cause it. Campaigns on real systems need sandboxing,
+  authorisation and a reset story.
+- **The publication can outrun the implementation.** A definition that is
+  clearer than the code is useful only if the difference is recorded. The
+  final correspondence section and the "code is the ground truth" sentence
+  are not decoration; they are the contract that keeps the paper honest.
+
+### A short agenda
+
+If the project continues, the order that gives the most value per unit of
+risk is probably: (i) an honest PNML-to-JSON import with an explicit loss
+report; (ii) capability negotiation for initial markings; (iii) an
+application chapter built from the ATM, elevator and benchmark records
+already in this journal; (iv) temporal properties as a runtime monitor; and
+(v) only then a state-space reduction, because it changes what coverage
+means. The first two are engineering with a clear test; the third is
+documentation of what already happened; the fourth is a design problem; the
+fifth is a research problem.
+
+None of this is a promise. It is a list to argue with, which is what a TODO
+list is for.
+
+## 40. Update: 26 November 2026 (DeepSeek V4.1 Flash)
+
+### The request
+
+Egge's TODO list carries three publication items beside the application
+chapter. Verbatim:
+
+> 3. A new chapter in the publication: Application [of the
+> tool}. Redocument our explorations and findings (based on what is
+> already there in journal.md). Are there any issues that haven't been covered yet?
+
+> 5. C.A.Petri should be always cited in a Petri net paper.
+
+> 6. We need a keyword list in the publication.
+
+> 7. An applicable paper by Antti Valmari should be cited, too.
+
+The work was done on the branch `v0.0.8`, whose version the publication now
+names.
+
+### The application chapter
+
+`publication/kettunen2026.tex` has a new section, *Application: what the
+campaigns found*, between the abstract algorithms and the
+implementation-correspondence section. The roadmap in the introduction names
+it, so a reader meets it before the symbol table.
+
+The chapter is built from this journal, not from new experiments. It has six
+parts:
+
+- **A ladder of models.** The drink machine, the elevator door, the ATM and
+  the four-machine 10,000-state ring, each pinned to the claim it exercises.
+- **The ATM campaign.** The 22-place worked example of §13: three initial
+  markings distinguished by cassette levels, the `covers` target that needs a
+  real withdrawal, the swallowed-card error marking with
+  `until_covered` and one crash dump, four certain error transitions, and the
+  `unpredictable` PIN input. The quoted campaign is the seed-5 record from
+  §13, including the 37-run completion and the 13/12/12 rotation over the
+  three markings. The chapter also explains why the two silent routes into
+  `reading` cannot be covered *definitely*: the belief tracker credits only
+  what every consistent path crosses.
+- **The fork benchmark.** §25's negative result: the edge channel alone
+  reproduces the no-ants outcome exactly, because the target walks saturate
+  the shared values around the fork; the pair layer keeps the crash lesson on
+  the route that earned it and reaches about 2.9 times the coverage for the
+  same run budget, at about 2.6 times the wall clock.
+- **Run length and evaporation.** §27's boundary experiment (777 edges
+  instead of 586 when aging moves to the run boundary, with two crashes
+  instead of three and four long runs instead of three) and §32's
+  10,000-state run-length experiment (12,198 / 12,527 / 13,254 / 11,798 edges
+  for `--max-events` 50 / 200 / 800 / 3200, with a 41% seed-to-seed spread
+  inside one size). The chapter draws the honest conclusion: run length is a
+  weak coverage lever, not a tuning constant.
+- **Rare transitions and the hunt.** §30's declared probability, attempt
+  budget, dwell and goal order, including the limits: an unreachable rare
+  transition keeps the campaign alive, attempt budgets do not survive a run
+  log, and the hunt is not a probability oracle.
+- **What the applications do not show.** No data variables, real-time
+  constraints, distributed clock or network partition; no representative
+  industrial sample; and the two engineering gaps that the campaigns exposed
+  but could not solve in the model: a wrapper can ignore the initial
+  marking's name, and PNML cannot carry the testing annotations. Both point
+  to the work in §41.
+
+The chapter is deliberately an application chapter, not a controlled
+evaluation. It says so in its first paragraph: the models isolate one
+mechanism at a time, the campaigns are deterministic only for a given seed,
+and the wall-clock numbers belong to the development machine.
+
+### Citations and keywords
+
+`publication/references.bib` gained two entries:
+
+- `petri1962kommunikation`, Petri's 1962 dissertation *Kommunikation mit
+  Automaten* (Rheinische Friedrich-Wilhelms-Universität Bonn).
+- `valmari1998state`, Valmari's *The State Explosion Problem* in *Lectures on
+  Petri Nets I* (LNCS 1491, pp. 429–528, DOI
+  `10.1007/3-540-65306-6_21`).
+
+The introduction now says that Petri introduced the nets and cites the
+thesis; the nets section cites it beside Murata; the paragraph that admits
+the graph can be infinite cites Valmari for the state explosion problem. The
+keyword list follows the abstract: Petri nets; model-based testing;
+reachability graph; state space; coverage; ant colony optimization; test
+generation.
+
+The draft line and the two version references now say 25 November 2026 and
+`v0.0.8`; `publication/README.md` says the same.
+
+### The build
+
+TeX Live is not installed in this environment. `pdflatex`, `bibtex`,
+`lualatex`, `xelatex`, `latexmk` and `tectonic` are all absent, and `sudo`
+requires a password. The PDF was therefore **not** rebuilt and no successful
+compile is claimed. The source was reviewed by hand and with `grep` for the
+version strings; the next step is Egge's TeX build, which should be run before
+the paper is quoted as compiled.
+
+## 41. Update: 26 November 2026 (DeepSeek V4.1 Flash)
+
+### The request
+
+Two items from Egge's TODO list, verbatim:
+
+> 1. Addition to the plug-in: based on having several initial markings,
+> if one of them is chosen, initialise the SUT accordingly. This is not
+> possible for all SUTs.
+
+> 2. Check that on PNML import, the model is first converted to eggembt
+> JSON format, to be augmented with eggembt labels, etc., for subsequent
+> testing.
+
+They are separate on purpose. The first is about what a plug-in can promise
+at run time; the second is about what a file format can carry before the
+first run.
+
+### `eggembt import`
+
+`src/io/JsonNetWriter.{h,cpp}` is the counterpiece of `JsonNetLoader`: it
+turns a `pn::Net` into a complete, pretty-printed eggembt JSON document. The
+new command is
+
+`eggembt import MODEL [--output FILE] [--strict]`.
+
+`MODEL` goes through the same `loadModel` path as `check` and `run`, so PNML
+is recognised by content sniffing and the loader's warnings behave the same.
+Without `--output` the JSON document is the only thing on standard output;
+with it, a one-line summary names the file and the place and transition
+counts.
+
+What the writer preserves is every meaningful annotation the loader
+understands: places and their bounds; transitions with kind, label, tracing
+override, `unpredictable`, `error`, `crash_dump`, `max_dumps`, milestone
+rank, `sync`, crash prediction, command hook and rare specification; normal
+and inhibitor arcs with weights; all initial, target and error markings with
+match mode, policy, target hits, crash settings and intentional flag; and the
+testing strategy. Default-valued keys are omitted, so the text is not a
+byte-for-byte copy of the input, but a reload produces the same net.
+
+What PNML cannot carry is absent by construction: target and error markings,
+place bounds, crash predictions and the strategy. The command does not invent
+them and does not pretend a PNML round-trip is an identity. The JSON model is
+the editable specification; the PNML file remains the standard-format view of
+its net. This is the "first converted, then augmented" path item 2 asked for.
+
+The round trip is pinned by tests:
+
+- `tst_jsonnetloader` writes and reloads the three shipped JSON models and a
+  synthetic model that uses every annotation key, comparing every field.
+- `tst_pnml` imports the shipped `coffee-pnml.pnml`, reloads the result
+  through `JsonNetLoader`, and checks that the net survives while target and
+  error markings stay empty.
+- `cli_test.sh` imports the PNML example, runs `check` on the result, checks
+  that an eggembt JSON model can be imported too, and exercises the usage
+  errors (`--output` without a value, a missing file, no model argument).
+
+The `atm.json` round trip is semantically equal; the only textual differences
+are defaults the loader had made explicit (`cassette: 0` disappears because a
+sparse marking has no zero entries, and the default policy and dump count are
+omitted).
+
+### The initial-marking capability
+
+`PluginCapabilities` has a new field, `initialMarkings`. It travels in the
+hello as an optional array:
+
+```json
+{"type":"hello","protocol":1,"name":"atm-agent","initials":["atm-lobby","atm-drivein"]}
+```
+
+`Protocol.cpp` encodes it only when non-empty and decodes it defensively;
+`AgentServer` copies it from the plug-in's capabilities, and `RemotePlugin`
+copies it into the tracker's view. The protocol version stays 1: the field is
+optional and unknown fields are ignored.
+
+`Session::pickInitialMarking` now takes the capabilities and an error string.
+Its rule is simple:
+
+- an empty `initials` list means "no restriction", so every initial marking is
+  a candidate, exactly as before;
+- otherwise only the markings whose names the plug-in listed are candidates,
+  and `runCounter_ % candidates.size()` rotates over them;
+- an explicit `--initial` is a promise: if the plug-in cannot realise one of
+  the requested markings, the run is aborted before `startRun`, with the
+  requested name and the names the plug-in does offer in the detail; it is
+  never silently replaced by another marking.
+
+The simulated SUT advertises every initial marking of its model, so
+`--simulate` and `eggembt agent-sim` keep the full rotation. The reference
+agent `examples/agents/ref_agent.cpp` advertises `{"start"}`, which is the one
+state its hand-written coffee machine can actually enter. A plug-in that does
+not advertise anything is trusted as before; the capability is a promise, not
+a proof, and a wrapper that ignores the name can still start the wrong state.
+
+The tests cover the protocol round trip and the advertised list
+(`tst_remote`), and four Session cases (`tst_session`): one advertised
+marking is used on every run; no advertisement keeps the historical
+round-robin over all markings; an explicit `--initial` outside the list aborts
+with the offered names; and an empty intersection aborts before the SUT is
+touched.
+
+### Suite status
+
+The build is clean with `-Wall -Wextra`. The suite is 19 CTest entries, 18
+unit suites with 304 tests, and 43 CLI scenarios, all green. The new tests are
+marked `DeepSeek V4.1 Flash`, as are the code and documentation changes. The
+work is staged; commit and push remain Egge's.
+
+### What remains open
+
+The capability does not make a wrapper honest, and the import does not make
+PNML expressive. Both limits are now stated in the user manual and in the
+publication's application chapter. The temporal-logic item of §35 and the
+state-space reduction sketched in §39 remain open.
